@@ -483,7 +483,9 @@ gondolin build cache rm --yes
 `info` reports the cache size and the cached Alpine minirootfs and kernel
 package versions. `update` refreshes the `main` and `community` package indexes
 for the selected build configuration (builds also refresh them automatically
-when a cached index references packages that are no longer on the mirror). `rm`
+when a cached index is older than 24 hours, so package security updates are
+picked up, or references packages that are no longer on the mirror; if the
+mirror is unreachable, builds fall back to the cached index). `rm`
 prompts before deleting Alpine minirootfs, package-index, and APK files while
 preserving unrelated build cache data.
 

@@ -8,6 +8,14 @@ import { decompressTarGz, extractEntries, parseTar } from "./tar.ts";
 import { pathEntryExists } from "./rootfs.ts";
 import type { ApkMeta } from "./types.ts";
 
+/**
+ * Maximum age of a cached APKINDEX before builds refresh it in `ms`
+ *
+ * Alpine ships security fixes as package updates within a release branch, so
+ * an index that is never refreshed silently pins builds to outdated packages.
+ */
+export const APK_INDEX_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
 /** Parse an APKINDEX file into package metadata records */
 export function parseApkIndex(content: string): ApkMeta[] {
   const packages: ApkMeta[] = [];
@@ -104,6 +112,17 @@ async function resolveAndDownload(
 
     if (refreshIndexes || !fs.existsSync(indexPath)) {
       await refreshPackageIndex(repo, arch, cacheDir);
+    } else if (isPackageIndexStale(indexPath)) {
+      try {
+        await refreshPackageIndex(repo, arch, cacheDir);
+      } catch (err) {
+        // Keep offline builds working with the cached index
+        log(
+          `warning: failed to refresh stale APKINDEX for ${repo}, using cached copy: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
     }
 
     const content = fs.readFileSync(indexPath, "utf8");
@@ -170,6 +189,10 @@ async function resolveAndDownload(
     downloads.push(apkPath);
   }
   return downloads;
+}
+
+function isPackageIndexStale(indexPath: string, now = Date.now()): boolean {
+  return now - fs.statSync(indexPath).mtimeMs > APK_INDEX_MAX_AGE_MS;
 }
 
 function packageIndexCachePaths(

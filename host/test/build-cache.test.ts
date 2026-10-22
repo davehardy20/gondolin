@@ -196,3 +196,135 @@ test("build cache: installPackages refreshes stale indexes on 404", async () => 
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+function setupAgedIndexFixture() {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "gondolin-cache-"));
+  const cacheDir = path.join(tmp, "cache");
+  const targetDir = path.join(tmp, "root");
+  const repo = "https://mirror.example/alpine/v3.23/main";
+  fs.mkdirSync(path.join(targetDir, "etc/apk"), { recursive: true });
+  fs.writeFileSync(path.join(targetDir, "etc/apk/repositories"), `${repo}\n`);
+  fs.mkdirSync(cacheDir, { recursive: true });
+
+  // Cached index older than the max age that still resolves (no 404)
+  const cachedIndex = path.join(
+    cacheDir,
+    "APKINDEX-https_mirror_example_alpine_v3_23_main-x86_64",
+  );
+  fs.writeFileSync(cachedIndex, "P:busybox\nV:1.0-r0\nT:Utilities\n");
+  const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+  fs.utimesSync(cachedIndex, twoDaysAgo, twoDaysAgo);
+
+  const makeApk = (version: string) => {
+    const apkDir = path.join(tmp, `apk-${version}`);
+    fs.mkdirSync(path.join(apkDir, "etc"), { recursive: true });
+    fs.writeFileSync(path.join(apkDir, "etc/busybox-version"), `${version}\n`);
+    const apkPath = path.join(tmp, `busybox-${version}.apk`);
+    child_process.execFileSync("tar", ["-czf", apkPath, "-C", apkDir, "etc"]);
+    return fs.readFileSync(apkPath);
+  };
+
+  const indexSource = path.join(tmp, "fresh");
+  fs.mkdirSync(indexSource);
+  fs.writeFileSync(
+    path.join(indexSource, "APKINDEX"),
+    "P:busybox\nV:1.1-r0\nT:Utilities\n",
+  );
+  const freshArchive = path.join(tmp, "fresh.tar.gz");
+  child_process.execFileSync("tar", [
+    "-czf",
+    freshArchive,
+    "-C",
+    indexSource,
+    "APKINDEX",
+  ]);
+
+  return {
+    tmp,
+    cacheDir,
+    targetDir,
+    repo,
+    cachedIndex,
+    freshIndexArchive: fs.readFileSync(freshArchive),
+    oldApk: makeApk("1.0"),
+    newApk: makeApk("1.1"),
+  };
+}
+
+test("build cache: installPackages refreshes indexes older than the max age", async () => {
+  const fx = setupAgedIndexFixture();
+  const previousFetch = globalThis.fetch;
+  const urls: string[] = [];
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    urls.push(url);
+    if (url === `${fx.repo}/x86_64/APKINDEX.tar.gz`) {
+      return new Response(fx.freshIndexArchive, { status: 200 });
+    }
+    if (url === `${fx.repo}/x86_64/busybox-1.0-r0.apk`) {
+      return new Response(fx.oldApk, { status: 200 });
+    }
+    if (url === `${fx.repo}/x86_64/busybox-1.1-r0.apk`) {
+      return new Response(fx.newApk, { status: 200 });
+    }
+    return new Response("not found", { status: 404 });
+  };
+
+  try {
+    await installPackages(
+      fx.targetDir,
+      ["busybox"],
+      "x86_64",
+      fx.cacheDir,
+      () => {},
+    );
+
+    assert.deepEqual(urls, [
+      `${fx.repo}/x86_64/APKINDEX.tar.gz`,
+      `${fx.repo}/x86_64/busybox-1.1-r0.apk`,
+    ]);
+    assert.match(fs.readFileSync(fx.cachedIndex, "utf8"), /V:1\.1-r0/);
+    assert.equal(
+      fs.readFileSync(path.join(fx.targetDir, "etc/busybox-version"), "utf8"),
+      "1.1\n",
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
+    fs.rmSync(fx.tmp, { recursive: true, force: true });
+  }
+});
+
+test("build cache: installPackages falls back to an aged index when refresh fails", async () => {
+  const fx = setupAgedIndexFixture();
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url === `${fx.repo}/x86_64/APKINDEX.tar.gz`) {
+      throw new TypeError("fetch failed");
+    }
+    if (url === `${fx.repo}/x86_64/busybox-1.0-r0.apk`) {
+      return new Response(fx.oldApk, { status: 200 });
+    }
+    return new Response("not found", { status: 404 });
+  };
+
+  try {
+    const logs: string[] = [];
+    await installPackages(
+      fx.targetDir,
+      ["busybox"],
+      "x86_64",
+      fx.cacheDir,
+      (msg) => logs.push(msg),
+    );
+
+    assert.ok(logs.some((msg) => /failed to refresh stale APKINDEX/.test(msg)));
+    assert.equal(
+      fs.readFileSync(path.join(fx.targetDir, "etc/busybox-version"), "utf8"),
+      "1.0\n",
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
+    fs.rmSync(fx.tmp, { recursive: true, force: true });
+  }
+});
