@@ -10,15 +10,13 @@ import crypto from "node:crypto";
 import type dns from "node:dns";
 import { Duplex } from "node:stream";
 import { monitorEventLoopDelay, performance } from "node:perf_hooks";
-import forge from "node-forge";
 
 import {
-  generatePositiveSerialNumber,
-  getCertificateSubjectKeyIdentifierBytes,
-  isNonNegativeSerialNumberHex,
+  generateMitmLeaf,
   loadOrCreateMitmCa,
-  mitmLeafHasRequiredKeyIdentifiers,
   resolveMitmCertDir,
+  validateMitmLeaf,
+  type MitmCa,
 } from "../mitm.ts";
 import {
   buildSyntheticDnsResponse,
@@ -48,12 +46,7 @@ import {
   type TcpMappedTarget,
   type TcpOptions,
 } from "./tcp.ts";
-import {
-  caCertVerifiesLeaf,
-  closeSharedDispatchers,
-  privateKeyMatchesLeafCert,
-  HttpReceiveBuffer,
-} from "../http/utils.ts";
+import { closeSharedDispatchers, HttpReceiveBuffer } from "../http/utils.ts";
 
 import {
   handlePlainHttpData,
@@ -360,11 +353,7 @@ export type QemuNetworkOptions = {
   ) => void;
 };
 
-type CaCert = {
-  key: forge.pki.rsa.PrivateKey;
-  cert: forge.pki.Certificate;
-  certPem: string;
-};
+type CaCert = Pick<MitmCa, "key" | "cert" | "certPem">;
 
 type TlsContextCacheEntry = {
   context: tls.SecureContext;
@@ -1589,76 +1578,15 @@ export class QemuNetworkBackend extends EventEmitter {
         fsp.readFile(keyPath, "utf8"),
         fsp.readFile(certPath, "utf8"),
       ]);
-      const cert = forge.pki.certificateFromPem(certPem);
-      if (!isNonNegativeSerialNumberHex(cert.serialNumber)) {
-        throw new Error("persisted mitm leaf cert has an unsafe serial number");
-      }
-      if (!caCertVerifiesLeaf(ca.cert, cert)) {
-        throw new Error("persisted mitm leaf cert is not signed by current ca");
-      }
-      if (!mitmLeafHasRequiredKeyIdentifiers(ca.cert, cert)) {
-        throw new Error(
-          "persisted mitm leaf cert is missing required key identifiers",
-        );
-      }
-      if (!privateKeyMatchesLeafCert(keyPem, cert)) {
-        throw new Error("persisted mitm leaf key does not match cert");
-      }
+      validateMitmLeaf(ca, { keyPem, certPem });
       return { keyPem, certPem };
     } catch {
-      // Generate new leaf certificate
-      const keys = forge.pki.rsa.generateKeyPair(2048);
-      const cert = forge.pki.createCertificate();
-
-      cert.publicKey = keys.publicKey;
-      cert.serialNumber = generatePositiveSerialNumber();
-      const now = new Date(Date.now() - 5 * 60 * 1000);
-      cert.validity.notBefore = now;
-      cert.validity.notAfter = new Date(now);
-      cert.validity.notAfter.setDate(cert.validity.notBefore.getDate() + 825);
-
-      const safeName = servername.replace(/[\r\n]/g, "");
-      const attrs = [{ name: "commonName", value: safeName }];
-      cert.setSubject(attrs);
-      cert.setIssuer(ca.cert.subject.attributes);
-
-      const altNames = net.isIP(servername)
-        ? [{ type: 7, ip: servername }]
-        : [{ type: 2, value: servername }];
-      const caSubjectKeyIdentifier = getCertificateSubjectKeyIdentifierBytes(
-        ca.cert,
-      );
-      if (caSubjectKeyIdentifier === undefined) {
-        throw new Error("mitm ca cert is missing required key identifiers");
-      }
-
-      cert.setExtensions([
-        { name: "basicConstraints", cA: false },
-        {
-          name: "keyUsage",
-          digitalSignature: true,
-          keyEncipherment: true,
-        },
-        { name: "extKeyUsage", serverAuth: true },
-        { name: "subjectAltName", altNames },
-        { name: "subjectKeyIdentifier" },
-        {
-          name: "authorityKeyIdentifier",
-          keyIdentifier: caSubjectKeyIdentifier,
-        },
-      ]);
-
-      cert.sign(ca.key, forge.md.sha256.create());
-
-      const keyPem = forge.pki.privateKeyToPem(keys.privateKey);
-      const certPem = forge.pki.certificateToPem(cert);
-
+      const leaf = await generateMitmLeaf(ca, servername);
       await Promise.all([
-        fsp.writeFile(keyPath, keyPem),
-        fsp.writeFile(certPath, certPem),
+        fsp.writeFile(keyPath, leaf.keyPem),
+        fsp.writeFile(certPath, leaf.certPem),
       ]);
-
-      return { keyPem, certPem };
+      return leaf;
     }
   }
 }

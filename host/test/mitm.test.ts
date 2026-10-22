@@ -2,20 +2,20 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 import test, { type TestContext } from "node:test";
 
-import forge from "node-forge";
-
 import {
+  certificateHasNonNegativeSerialNumber,
   generatePositiveSerialNumber,
-  getCertificateSubjectKeyIdentifierBytes,
+  getCertificateSubjectKeyIdentifier,
   getDefaultMitmCertDir,
-  isNonNegativeSerialNumberHex,
   loadOrCreateMitmCa,
   loadOrCreateMitmCaSync,
   mitmCaHasRequiredKeyIdentifiers,
   resolveMitmCertDir,
 } from "../src/mitm.ts";
+import { createLegacyCertificate, getKeyUsageBits } from "./helpers/certs.ts";
 
 function makeTempDir(t: TestContext, prefix = "gondolin-mitm-") {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -28,57 +28,48 @@ function makeTempDir(t: TestContext, prefix = "gondolin-mitm-") {
 function assertLooksLikeMitmCa(ca: {
   keyPem: string;
   certPem: string;
-  key: any;
-  cert: any;
+  key: crypto.KeyObject;
+  cert: crypto.X509Certificate;
 }) {
   assert.ok(ca.keyPem.includes("BEGIN RSA PRIVATE KEY"));
   assert.ok(ca.certPem.includes("BEGIN CERTIFICATE"));
 
-  const cert = forge.pki.certificateFromPem(ca.certPem);
-  const key = forge.pki.privateKeyFromPem(ca.keyPem);
+  const cert = new crypto.X509Certificate(ca.certPem);
+  const key = crypto.createPrivateKey(ca.keyPem);
 
   // CN
-  const cn = cert.subject.getField("CN")?.value;
-  assert.equal(cn, "gondolin-mitm-ca");
+  assert.equal(cert.subject, "CN=gondolin-mitm-ca");
 
   // Self-signed
-  assert.equal(cert.issuer.getField("CN")?.value, "gondolin-mitm-ca");
-  assert.equal(cert.verify(cert), true);
+  assert.equal(cert.issuer, "CN=gondolin-mitm-ca");
+  assert.equal(cert.checkIssued(cert), true);
+  assert.equal(cert.verify(cert.publicKey), true);
 
   // Certificate is a CA
-  const basicConstraints = cert.getExtension("basicConstraints") as any;
-  assert.ok(basicConstraints);
-  assert.equal(Boolean(basicConstraints.cA), true);
-  assert.equal(Boolean(basicConstraints.critical), true);
+  assert.equal(cert.ca, true);
 
   // Key usage
-  const keyUsage = cert.getExtension("keyUsage") as any;
+  const keyUsage = getKeyUsageBits(cert);
   assert.ok(keyUsage);
-  assert.equal(Boolean(keyUsage.keyCertSign), true);
-  assert.equal(Boolean(keyUsage.cRLSign), true);
-  assert.equal(Boolean(keyUsage.critical), true);
+  assert.deepEqual([...keyUsage.bits].sort(), [5, 6]); // keyCertSign, cRLSign
+  assert.equal(keyUsage.critical, true);
 
   // Key identifiers are required by strict TLS clients (e.g. Python/OpenSSL)
-  assert.ok(getCertificateSubjectKeyIdentifierBytes(cert));
+  assert.ok(getCertificateSubjectKeyIdentifier(cert));
   assert.equal(mitmCaHasRequiredKeyIdentifiers(cert), true);
 
   // Serial number must remain non-negative for strict TLS clients (e.g. Go)
-  assert.equal(isNonNegativeSerialNumberHex(cert.serialNumber), true);
+  assert.equal(certificateHasNonNegativeSerialNumber(cert), true);
 
   // Validity window (10 years)
-  assert.ok(cert.validity.notBefore instanceof Date);
-  assert.ok(cert.validity.notAfter instanceof Date);
-  assert.ok(
-    cert.validity.notAfter.getTime() > cert.validity.notBefore.getTime(),
-  );
-  const days =
-    (cert.validity.notAfter.getTime() - cert.validity.notBefore.getTime()) /
-    (24 * 60 * 60 * 1000);
+  const notBefore = Date.parse(cert.validFrom);
+  const notAfter = Date.parse(cert.validTo);
+  assert.ok(notAfter > notBefore);
+  const days = (notAfter - notBefore) / (24 * 60 * 60 * 1000);
   assert.ok(days > 3600 && days < 3700);
 
-  // Public/private key match (compare modulus n)
-  const publicKey = cert.publicKey as forge.pki.rsa.PublicKey;
-  assert.equal(publicKey.n.toString(16), key.n.toString(16));
+  // Public/private key match
+  assert.equal(cert.checkPrivateKey(key), true);
 }
 
 test("mitm getDefaultMitmCertDir respects XDG_CACHE_HOME", (t) => {
@@ -102,9 +93,32 @@ test("mitm resolveMitmCertDir uses override", () => {
 test("mitm serial helpers create positive serial numbers", () => {
   for (let i = 0; i < 64; i += 1) {
     const serial = generatePositiveSerialNumber();
-    assert.equal(isNonNegativeSerialNumberHex(serial), true);
+    assert.equal(serial.length, 16);
+    assert.ok(serial[0] > 0 && serial[0] < 0x80);
   }
-  assert.equal(isNonNegativeSerialNumberHex("ff"), false);
+
+  const negative = createLegacyCertificate({
+    commonName: "negative-serial",
+    serialNumber: Buffer.from([0xff]),
+  });
+  assert.equal(
+    certificateHasNonNegativeSerialNumber(
+      new crypto.X509Certificate(negative.certPem),
+    ),
+    false,
+  );
+
+  // A leading zero octet keeps a high first content byte positive
+  const padded = createLegacyCertificate({
+    commonName: "padded-serial",
+    serialNumber: Buffer.from([0x00, 0xff]),
+  });
+  assert.equal(
+    certificateHasNonNegativeSerialNumber(
+      new crypto.X509Certificate(padded.certPem),
+    ),
+    true,
+  );
 });
 
 test("mitm loadOrCreateMitmCaSync creates and persists CA", (t) => {
@@ -130,75 +144,45 @@ test("mitm loadOrCreateMitmCaSync creates and persists CA", (t) => {
 test("mitm loadOrCreateMitmCaSync regenerates CA with unsafe serial", (t) => {
   const dir = makeTempDir(t);
 
-  const keys = forge.pki.rsa.generateKeyPair(2048);
-  const cert = forge.pki.createCertificate();
-  cert.publicKey = keys.publicKey;
-  cert.serialNumber = "ff";
-  const now = new Date(Date.now() - 5 * 60 * 1000);
-  cert.validity.notBefore = now;
-  cert.validity.notAfter = new Date(now);
-  cert.validity.notAfter.setDate(cert.validity.notBefore.getDate() + 3650);
-  const attrs = [{ name: "commonName", value: "gondolin-mitm-ca" }];
-  cert.setSubject(attrs);
-  cert.setIssuer(attrs);
-  cert.setExtensions([
-    { name: "basicConstraints", cA: true, critical: true },
-    {
-      name: "keyUsage",
-      keyCertSign: true,
-      cRLSign: true,
-      critical: true,
-    },
-  ]);
-  cert.sign(keys.privateKey, forge.md.sha256.create());
-
-  fs.writeFileSync(
-    path.join(dir, "ca.key"),
-    forge.pki.privateKeyToPem(keys.privateKey),
-  );
-  const badCertPem = forge.pki.certificateToPem(cert);
-  fs.writeFileSync(path.join(dir, "ca.crt"), badCertPem);
+  const bad = createLegacyCertificate({
+    commonName: "gondolin-mitm-ca",
+    serialNumber: Buffer.from([0xff]),
+  });
+  fs.writeFileSync(path.join(dir, "ca.key"), bad.keyPem);
+  fs.writeFileSync(path.join(dir, "ca.crt"), bad.certPem);
 
   const loaded = loadOrCreateMitmCaSync(dir);
   assertLooksLikeMitmCa(loaded);
-  assert.notEqual(loaded.certPem, badCertPem);
+  assert.notEqual(loaded.certPem, bad.certPem);
 });
 
 test("mitm loadOrCreateMitmCaSync regenerates CA missing key identifiers", (t) => {
   const dir = makeTempDir(t);
 
-  const keys = forge.pki.rsa.generateKeyPair(2048);
-  const cert = forge.pki.createCertificate();
-  cert.publicKey = keys.publicKey;
-  cert.serialNumber = "01";
-  const now = new Date(Date.now() - 5 * 60 * 1000);
-  cert.validity.notBefore = now;
-  cert.validity.notAfter = new Date(now);
-  cert.validity.notAfter.setDate(cert.validity.notBefore.getDate() + 3650);
-  const attrs = [{ name: "commonName", value: "gondolin-mitm-ca" }];
-  cert.setSubject(attrs);
-  cert.setIssuer(attrs);
-  cert.setExtensions([
-    { name: "basicConstraints", cA: true, critical: true },
-    {
-      name: "keyUsage",
-      keyCertSign: true,
-      cRLSign: true,
-      critical: true,
-    },
-  ]);
-  cert.sign(keys.privateKey, forge.md.sha256.create());
-
-  fs.writeFileSync(
-    path.join(dir, "ca.key"),
-    forge.pki.privateKeyToPem(keys.privateKey),
-  );
-  const legacyCertPem = forge.pki.certificateToPem(cert);
-  fs.writeFileSync(path.join(dir, "ca.crt"), legacyCertPem);
+  const legacy = createLegacyCertificate({
+    commonName: "gondolin-mitm-ca",
+    serialNumber: Buffer.from([0x01]),
+  });
+  fs.writeFileSync(path.join(dir, "ca.key"), legacy.keyPem);
+  fs.writeFileSync(path.join(dir, "ca.crt"), legacy.certPem);
 
   const loaded = loadOrCreateMitmCaSync(dir);
   assertLooksLikeMitmCa(loaded);
-  assert.notEqual(loaded.certPem, legacyCertPem);
+  assert.notEqual(loaded.certPem, legacy.certPem);
+});
+
+test("mitm loadOrCreateMitmCaSync regenerates CA with mismatched key", (t) => {
+  const dir = makeTempDir(t);
+
+  const original = loadOrCreateMitmCaSync(dir);
+  const otherKey = crypto
+    .generateKeyPairSync("rsa", { modulusLength: 2048 })
+    .privateKey.export({ type: "pkcs1", format: "pem" }) as string;
+  fs.writeFileSync(path.join(dir, "ca.key"), otherKey);
+
+  const loaded = loadOrCreateMitmCaSync(dir);
+  assertLooksLikeMitmCa(loaded);
+  assert.notEqual(loaded.certPem, original.certPem);
 });
 
 test("mitm loadOrCreateMitmCa async loads existing CA generated by sync", async (t) => {

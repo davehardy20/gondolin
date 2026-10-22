@@ -1,7 +1,6 @@
 import net from "node:net";
 import dns from "node:dns";
 import { Agent } from "undici";
-import forge from "node-forge";
 
 import type {
   HttpHooks,
@@ -615,35 +614,6 @@ export function getCheckedDispatcher(
   evictSharedDispatchersIfNeeded(backend);
 
   return dispatcher;
-}
-
-export function caCertVerifiesLeaf(
-  caCert: forge.pki.Certificate,
-  leafCert: forge.pki.Certificate,
-): boolean {
-  try {
-    return caCert.verify(leafCert);
-  } catch {
-    return false;
-  }
-}
-
-export function privateKeyMatchesLeafCert(
-  keyPem: string,
-  leafCert: forge.pki.Certificate,
-): boolean {
-  try {
-    const privateKey = forge.pki.privateKeyFromPem(
-      keyPem,
-    ) as forge.pki.rsa.PrivateKey;
-    const publicKey = leafCert.publicKey as forge.pki.rsa.PublicKey;
-    return (
-      privateKey.n.toString(16) === publicKey.n.toString(16) &&
-      privateKey.e.toString(16) === publicKey.e.toString(16)
-    );
-  } catch {
-    return false;
-  }
 }
 
 export type HttpRequestData = {
