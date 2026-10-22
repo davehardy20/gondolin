@@ -4,6 +4,8 @@ All notable changes to Gondolin are documented here.
 
 ## Unreleased
 
+## 0.14.0
+
 - Fix `chmod` from the guest being silently ignored on VFS mounts (`MemoryProvider`, `RealFSProvider`, `ShadowProvider`, ...): sandboxfs now forwards mode changes to the host and providers gain an optional `chmod()` method.  `RealFSProvider` never applies setuid/setgid bits to host files.  Requires a guest image built with this version.  #115
 - Fix a TOCTOU race in VFS path validation: fs-rpc requests are now processed strictly in order, so a guest pipelining requests can no longer swap a directory between `RealFSProvider`'s path check and the host syscall to reach files outside the mount root.  #143
 - Drop the `node-forge` dependency (affected by GHSA-86w9-cpqp-85rv with no patched release).  MITM CA and leaf certificates are now built with `node:crypto` and a small DER encoder; existing certificates in the MITM cert dir keep working.  Key generation is native and off the event loop, and a persisted CA whose key does not match its certificate is now regenerated.

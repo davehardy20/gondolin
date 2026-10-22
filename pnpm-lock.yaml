@@ -198,13 +198,6 @@ importers:
       typescript:
         specifier: 7.0.2
         version: 7.0.2
-    optionalDependencies:
-      '@earendil-works/gondolin-krun-runner-darwin-arm64':
-        specifier: 0.13.0
-        version: 0.13.0
-      '@earendil-works/gondolin-krun-runner-linux-x64':
-        specifier: 0.13.0
-        version: 0.13.0
 
   packages/gondolin-krun-runner-darwin-arm64: {}
 
@@ -272,18 +265,6 @@ packages:
   '@cto.af/wtf8@0.0.5':
     resolution: {integrity: sha512-LfUFi+Vv4eDzj+XAtR89e3wwjXA/NZjUSwU5NhwbBrLecxPaBYFy3exCuc1j+D4UZeOVdqlsl8G7LmOt18V0tg==}
     engines: {node: '>=20'}
-
-  '@earendil-works/gondolin-krun-runner-darwin-arm64@0.13.0':
-    resolution: {integrity: sha512-b/Rz0YH0C10CBkPzlGbaqJW4kRX/uAb5iDDSb0CknarmWvwkbQRgaaQVJ7DXjmNkBf/88kp4/dpdpEGsUT08VA==}
-    cpu: [arm64]
-    os: [darwin]
-    hasBin: true
-
-  '@earendil-works/gondolin-krun-runner-linux-x64@0.13.0':
-    resolution: {integrity: sha512-IFGOKhx+fxsl0Jk1XhNVl83cPJYpGpetKnU1GWgI7u+MYm4iUfce0/QK05zpn2xs/FXsNzGMmb0lPkd19FQqhw==}
-    cpu: [x64]
-    os: [linux]
-    hasBin: true
 
   '@types/node@18.19.130':
     resolution: {integrity: sha512-GRaXQx6jGfL8sKfaIDD6OupbIHBr9jv7Jnaml9tB7l4v068PAOXqfcujMMo5PhbIs6ggR1XODELqahT2R8v0fg==}
@@ -498,12 +479,6 @@ snapshots:
     optional: true
 
   '@cto.af/wtf8@0.0.5': {}
-
-  '@earendil-works/gondolin-krun-runner-darwin-arm64@0.13.0':
-    optional: true
-
-  '@earendil-works/gondolin-krun-runner-linux-x64@0.13.0':
-    optional: true
 
   '@types/node@18.19.130':
     dependencies:
