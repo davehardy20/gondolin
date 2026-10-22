@@ -30,7 +30,7 @@ const LIBKRUNFW_RELEASE_BASE_URL =
 const DEFAULT_LIBKRUNFW_VERSION = "v5.2.1";
 
 function resolveAlpineConfig(config: BuildConfig): ResolvedAlpineConfig {
-  const alpine = config.alpine ?? { version: "3.23.0" };
+  const alpine = config.alpine ?? { version: "3.23.7" };
   const kernelPackage = alpine.kernelPackage ?? "linux-virt";
   const useOciRootfs = hasOciRootfs(config);
   const defaultRootfsPackages = useOciRootfs

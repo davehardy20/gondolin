@@ -21,7 +21,7 @@ export interface OciRootfsOptions {
 export interface AlpineBuildOptions {
   /** target architecture */
   arch: Architecture;
-  /** alpine version (e.g. "3.23.0") */
+  /** alpine version (e.g. "3.23.7") */
   alpineVersion: string;
   /** alpine branch (e.g. "v3.23") */
   alpineBranch: string;

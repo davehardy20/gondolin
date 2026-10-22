@@ -104,7 +104,7 @@ The file has the following structure:
     "FOO": "bar"
   },
   "alpine": {
-    "version": "3.23.0",
+    "version": "3.23.7",
     "kernelPackage": "linux-virt",
     "kernelImage": "vmlinuz-virt",
     "rootfsPackages": [
@@ -112,6 +112,7 @@ The file has the following structure:
       "rng-tools",
       "bash",
       "ca-certificates",
+      "ca-certificates-bundle",
       "curl",
       "e2fsprogs",
       "e2fsprogs-extra",
@@ -189,7 +190,7 @@ Because `env` is stored in the image, **do not put real secrets here**.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `version` | string | `"3.23.0"` | Alpine Linux version |
+| `version` | string | `"3.23.7"` | Alpine Linux version |
 | `branch` | string | derived | Alpine branch (e.g., `"v3.23"`) |
 | `mirror` | string | official CDN | Custom mirror URL |
 | `kernelPackage` | string | `"linux-virt"` | Kernel package name |

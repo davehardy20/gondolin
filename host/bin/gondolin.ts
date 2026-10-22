@@ -2823,7 +2823,7 @@ async function runBuildCache(argv: string[]) {
     }
     if (arch) config.arch = arch;
 
-    const alpine = config.alpine ?? { version: "3.23.0" };
+    const alpine = config.alpine ?? { version: "3.23.7" };
     console.log(
       `Updating Alpine ${alpine.branch ?? alpine.version} package indexes for ${config.arch}...`,
     );

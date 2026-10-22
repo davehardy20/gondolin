@@ -28,7 +28,7 @@ export type EnvInput = string[] | Record<string, string>;
  * Alpine Linux specific configuration.
  */
 export interface AlpineConfig {
-  /** alpine version (e.g. "3.23.0") */
+  /** alpine version (e.g. "3.23.7") */
   version: string;
   /** alpine branch (e.g. "v3.23", default: derived from version) */
   branch?: string;
@@ -201,7 +201,7 @@ export function getDefaultBuildConfig(): BuildConfig {
     arch,
     distro: "alpine",
     alpine: {
-      version: "3.23.0",
+      version: "3.23.7",
       kernelPackage: "linux-virt",
       kernelImage: "vmlinuz-virt",
       rootfsPackages: [
@@ -209,6 +209,7 @@ export function getDefaultBuildConfig(): BuildConfig {
         "rng-tools",
         "bash",
         "ca-certificates",
+        "ca-certificates-bundle",
         "curl",
         "e2fsprogs",
         "e2fsprogs-extra",

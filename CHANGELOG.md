@@ -8,6 +8,7 @@ All notable changes to Gondolin are documented here.
 - Fix a TOCTOU race in VFS path validation: fs-rpc requests are now processed strictly in order, so a guest pipelining requests can no longer swap a directory between `RealFSProvider`'s path check and the host syscall to reach files outside the mount root.  #143
 - Drop the `node-forge` dependency (affected by GHSA-86w9-cpqp-85rv with no patched release).  MITM CA and leaf certificates are now built with `node:crypto` and a small DER encoder; existing certificates in the MITM cert dir keep working.  Key generation is native and off the event loop, and a persisted CA whose key does not match its certificate is now regenerated.
 - Fix image builds silently reusing stale cached Alpine package indexes, which pinned new images to outdated (potentially vulnerable) packages until `gondolin build cache update` was run.  Builds now refresh indexes older than 24 hours and fall back to the cached copy when the mirror is unreachable.
+- Bump the default Alpine version to 3.23.7 and install `ca-certificates-bundle` explicitly so `/etc/ssl/certs/ca-certificates.crt` always comes from the current package rather than the minirootfs.
 
 ## 0.13.0
 

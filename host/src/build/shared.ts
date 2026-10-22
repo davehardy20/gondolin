@@ -34,6 +34,7 @@ export const DEFAULT_ROOTFS_PACKAGES = [
   "rng-tools",
   "bash",
   "ca-certificates",
+  "ca-certificates-bundle",
   "curl",
   "nodejs",
   "npm",

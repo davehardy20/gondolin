@@ -3,7 +3,7 @@
   "arch": "x86_64",
   "distro": "alpine",
   "alpine": {
-    "version": "3.23.0",
+    "version": "3.23.7",
     "kernelPackage": "linux-virt",
     "kernelImage": "vmlinuz-virt",
     "rootfsPackages": [
@@ -11,6 +11,7 @@
       "rng-tools",
       "bash",
       "ca-certificates",
+      "ca-certificates-bundle",
       "curl",
       "e2fsprogs",
       "e2fsprogs-extra",
