@@ -636,3 +636,62 @@ test("allocateFileOpId does not reuse active guest exec ids", () => {
   const id = (server as any).allocateFileOpId();
   assert.equal(id, 2);
 });
+
+test("RPC rejects autoRestart even with pre-resolved options", () => {
+  assert.throws(
+    () =>
+      new SandboxServer(
+        makeResolvedOptions({
+          autoRestart: true,
+          rpcChannel: { handler: async () => "ok" },
+          virtioRpcSocketPath: "/tmp/gondolin-test-rpc/channel.sock",
+        }),
+      ),
+    /rpcChannel.*autoRestart/,
+  );
+});
+
+for (const change of ["lifecycle", "boot", "stopped"] as const) {
+  test(`RPC refuses ${change} restart before changing controller state`, async () => {
+    const server = new SandboxServer(
+      makeResolvedOptions({
+        rpcChannel: { handler: async () => "ok" },
+        virtioRpcSocketPath: "/tmp/gondolin-test-rpc/channel.sock",
+      }),
+    );
+    const { client, captured } = makeClient();
+    const internal = server as any;
+    const original = { fuseMount: "/data", fuseBinds: [] };
+    let restarts = 0;
+    internal.bootConfig = original;
+    internal.clients.add(client);
+    internal.controller.getState = () =>
+      change === "stopped" ? "stopped" : "running";
+    internal.controller.restart = async () => {
+      restarts++;
+    };
+    internal.controller.start = async () => {
+      restarts++;
+    };
+    try {
+      if (change === "stopped") await internal.rpcChannel.close();
+      if (change === "lifecycle") {
+        internal.handleClientMessage(client, {
+          type: "lifecycle",
+          action: "restart",
+        });
+      } else {
+        await internal.handleBoot(client, {
+          type: "boot",
+          fuseMount: change === "boot" ? "/changed" : "/data",
+          fuseBinds: [],
+        });
+      }
+      assert.equal(restarts, 0);
+      assert.equal(internal.bootConfig, original);
+      assert.equal(captured.json.at(-1)?.code, "rpc_restart_unsupported");
+    } finally {
+      await server.close();
+    }
+  });
+}

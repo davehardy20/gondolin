@@ -34,6 +34,11 @@ export type { ExecOptions, ExecResult, ExecProcess } from "./exec.ts";
 // Server for running the sandbox
 export { SandboxServer } from "./sandbox/server.ts";
 export {
+  MAX_RPC_PAYLOAD_BYTES,
+  type RpcChannelOptions,
+} from "./sandbox/rpc-channel.ts";
+export type { RpcRequest } from "./sandbox/virtio-protocol.ts";
+export {
   DEFAULT_GUEST_TMPFS,
   type GuestTmpfsMountOptions,
   type GuestTmpfsMounts,

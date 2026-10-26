@@ -24,10 +24,16 @@ export class VirtioBridge {
   private closed = false;
   private readonly socketPath: string;
   private readonly maxPendingBytes: number;
+  private readonly decodeFrame: (frame: Buffer) => IncomingMessage;
 
-  constructor(socketPath: string, maxPendingBytes: number = 8 * 1024 * 1024) {
+  constructor(
+    socketPath: string,
+    maxPendingBytes: number = 8 * 1024 * 1024,
+    decodeFrame: (frame: Buffer) => IncomingMessage = decodeMessage,
+  ) {
     this.socketPath = socketPath;
     this.maxPendingBytes = maxPendingBytes;
+    this.decodeFrame = decodeFrame;
   }
 
   connect() {
@@ -117,6 +123,8 @@ export class VirtioBridge {
 
   onMessage?: (message: IncomingMessage) => void;
   onError?: (error: unknown) => void;
+  /** Called once when the active guest peer disconnects */
+  onDisconnect?: () => void;
 
   /** Called when the bridge may be able to accept more queued messages */
   onWritable?: () => void;
@@ -172,7 +180,7 @@ export class VirtioBridge {
       try {
         this.reader.push(chunk, (frame) => {
           try {
-            const message = decodeMessage(frame) as IncomingMessage;
+            const message = this.decodeFrame(frame);
             this.onMessage?.(message);
           } catch (err) {
             this.onError?.(err);
@@ -203,11 +211,13 @@ export class VirtioBridge {
   }
 
   private handleDisconnect() {
-    if (this.socket) {
-      this.socket.destroy();
-      this.socket = null;
-    }
+    const socket = this.socket;
+    this.socket = null;
     this.waitingDrain = false;
+    if (socket) {
+      socket.destroy();
+      this.onDisconnect?.();
+    }
   }
 
   private scheduleReconnect() {
