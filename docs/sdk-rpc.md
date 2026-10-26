@@ -25,7 +25,7 @@ const vm = await VM.create({
 });
 
 try {
-  // Run an application client using /dev/virtio-ports/virtio-rpc.
+  // Discover virtio-rpc through sysfs, then open its /dev/vport* device.
 } finally {
   await vm.close();
 }
@@ -35,8 +35,8 @@ try {
 
 QEMU only. Requesting RPC on krun or with `sandbox.autoRestart` enabled throws;
 it is never silently disabled. No device or RPC listener is created unless
-`sandbox.rpcChannel` is supplied. The existing guest init discovers named
-virtio ports; no new guest daemon or image rebuild is needed.
+`sandbox.rpcChannel` is supplied. Linux exposes the named virtio port through
+sysfs; no new guest daemon or image rebuild is needed.
 
 The host listener uses a unique private directory with mode `0700`, removed
 at shutdown. The channel aborts pending handlers on peer disconnection, VM stop
@@ -45,6 +45,20 @@ restart and changed boot configurations that would restart the VM are rejected
 before mutating the active boot configuration. Automatic QEMU idle pausing is
 disabled for VMs with RPC so a waiting guest can receive
 its response.
+
+## Guest device discovery
+
+Do not assume `/dev/virtio-ports/virtio-rpc` exists. That convenient symlink
+requires udev/mdev setup and is not guaranteed by the image's init script.
+Enumerate `/sys/class/virtio-ports/vport*/name`, read each name, and select the
+entry whose trimmed contents equal `virtio-rpc`. Open the corresponding
+`/dev/vport*` character device with read/write access. Validate the device name
+before forming its path; do not select the first port or a control/VFS port.
+
+Wait only for a bounded period while the port and device node appear. The
+Node client in `host/test/virtio-rpc-vm.test.ts` retries missing entries every
+25 milliseconds for at most 5 seconds, using a monotonic clock. Unexpected
+filesystem errors fail immediately. It uses only Node built-ins.
 
 ## Wire protocol
 
@@ -113,8 +127,10 @@ node --test test/virtio-rpc-vm.test.ts
 ```
 
 The VM test requires hardware virtualization and the normal Alpine guest
-assets with Node. It exercises an actual guest device with networking disabled,
-without any guest dependency installation. It skips when hardware acceleration
-is unavailable; a skipped test is not live evidence. Tool delegation and the
+assets with Node. It removes any named RPC symlink in its disposable guest,
+then exercises the actual `/dev/vport*` device through sysfs discovery with
+networking disabled, without any guest dependency installation. A second VM
+case verifies the discovery deadline when RPC is not configured. These tests
+skip when hardware acceleration is unavailable; skipped tests are not live evidence. Tool delegation and the
 real Mulch/Seeds round trips belong to the calling application, not this generic
 transport test.
