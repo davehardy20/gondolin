@@ -243,10 +243,9 @@ export function platformEntries(lockfilePath, target) {
   return entries;
 }
 
-// Alpine guests need the musl build of a native optional dependency. When the
-// lockfile carries a `-musl` variant in the same directory, the `-gnu` variant
-// is expected to be absent; when it does not, the gnu (or libc-neutral) variant
-// must be present.
+// Only musl targets may substitute a native dependency's `-musl` variant for
+// its `-gnu` variant in the same directory. Other targets still require their
+// matching GNU package even when the lockfile also contains a musl build.
 export function assertPlatformTrees(nodeModulesDir, lockfilePath, target) {
   const entries = platformEntries(lockfilePath, target);
   const muslNames = new Set(
@@ -258,6 +257,7 @@ export function assertPlatformTrees(nodeModulesDir, lockfilePath, target) {
   const missing = [];
   for (const entry of entries) {
     if (
+      target.libc === "musl" &&
       entry.name.endsWith("-gnu") &&
       muslNames.has(`${entry.dir}/${entry.name.replace(/-gnu$/, "-musl")}`)
     ) {

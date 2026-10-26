@@ -609,6 +609,39 @@ test("prepare-pi-bundle: musl variant replaces the gnu variant", (t: TestContext
   assert.equal(count, 2);
 });
 
+test("prepare-pi-bundle: glibc targets require the gnu variant even when musl exists", (t: TestContext) => {
+  const root = writeFixture(t, {
+    packages: {
+      "node_modules/@rollup/rollup-linux-arm64-gnu": {
+        version: "1.0.0",
+        optional: true,
+        os: ["linux"],
+        cpu: ["arm64"],
+        libc: ["glibc"],
+      },
+      "node_modules/@rollup/rollup-linux-arm64-musl": {
+        version: "1.0.0",
+        optional: true,
+        os: ["linux"],
+        cpu: ["arm64"],
+        libc: ["musl"],
+      },
+    },
+  });
+  install(root, "@rollup/rollup-linux-arm64-musl");
+  const args = [
+    path.join(root, "node_modules"),
+    path.join(root, "package-lock.json"),
+    { ...MUSL_TARGET, libc: "glibc" },
+  ] as const;
+  assert.throws(
+    () => assertPlatformTrees(...args),
+    /missing linux\/arm64\/glibc platform packages: node_modules\/@rollup\/rollup-linux-arm64-gnu/,
+  );
+  install(root, "@rollup/rollup-linux-arm64-gnu");
+  assert.equal(assertPlatformTrees(...args), 2);
+});
+
 test("prepare-pi-bundle: a missing musl package fails closed", (t: TestContext) => {
   const root = writeFixture(t, {
     packages: {
