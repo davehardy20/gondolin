@@ -4,6 +4,13 @@ All notable changes to Gondolin are documented here.
 
 ## Unreleased
 
+- Add `images/pi-node-base.json` and `scripts/prepare-pi-bundle.mjs`: an Alpine
+  guest image config that bakes a Node agent runtime, bin links, a system git
+  config, a HOME skeleton, and per-repo `node_modules` trees for zero-install
+  validation, with a `provenance.json` recording the target triple and the
+  lockfiles baked in. See *Worked Example: A Prepared Bundle Image* in
+  `docs/custom-images.md`.
+
 ## 0.14.0
 
 - Fix `chmod` from the guest being silently ignored on VFS mounts (`MemoryProvider`, `RealFSProvider`, `ShadowProvider`, ...): sandboxfs now forwards mode changes to the host and providers gain an optional `chmod()` method.  `RealFSProvider` never applies setuid/setgid bits to host files.  Requires a guest image built with this version.  #115

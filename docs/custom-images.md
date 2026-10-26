@@ -74,7 +74,10 @@ helpers from source.
 brew install lz4 e2fsprogs
 ```
 
-The build tries to locate `mke2fs` automatically (including common Homebrew locations). If you still see `mke2fs: command not found`, make sure `mke2fs` is available on your `PATH` (you can check where Homebrew installed it with `brew --prefix e2fsprogs`).
+The build tries to locate `mke2fs` automatically (including common Homebrew
+locations). If you still see `mke2fs: command not found`, make sure `mke2fs` is
+available on your `PATH` (you can check where Homebrew installed it with
+`brew --prefix e2fsprogs`).
 
 ### Linux (Debian/Ubuntu)
 
@@ -370,7 +373,7 @@ await vm.close();
 
 A successful build creates:
 
-```
+```text
 my-assets/
   manifest.json        # Build metadata and checksums
   vmlinuz-virt         # Linux kernel (qemu/default)
@@ -387,6 +390,73 @@ including the resolved image digest used during export.
 
 That `buildId` is used by snapshots/checkpoints to locate the correct guest
 assets without embedding absolute host paths.
+
+## Worked Example: A Prepared Bundle Image
+
+`images/pi-node-base.json` builds an Alpine guest with the pinned Pi runtime
+and optional pre-installed repository dependency trees. Its generated copy
+sources live under the gitignored `images/pi-bundle/` directory:
+
+```text
+images/pi-bundle/
+  node_modules/                 # npm dependency tree baked into the image
+  bin/<name>                    # symlinks into /usr/local/lib/node_modules/.bin/
+  etc/gitconfig                 # system git config for guest-mounted worktrees
+  pi-scratch/                   # skeleton HOME directory
+  deps/<repoKey>/node_modules/   # per-repo Linux/musl dependency trees
+  provenance.json               # target, runtime version, and lockfile digests
+```
+
+From the repository root, prepare the runtime-only bundle and build the image:
+
+```bash
+node scripts/prepare-pi-bundle.mjs --config images/pi-node-base.json --no-deps
+node host/bin/gondolin.ts build --config images/pi-node-base.json --tag pi-node-base:local
+```
+
+To bake a repository's dependencies, omit `--no-deps` and add
+`--deps example=/absolute/path/to/repo` to the preparation command. Repeat
+`--deps` for additional repositories, using keys that are unique ignoring
+ASCII case so output directories are portable across build hosts. Each must
+contain `package.json` and `package-lock.json`; installation happens in temporary staging directories,
+not in those repositories. `--no-deps` overrides any supplied `--deps` values.
+
+The output must stay inside the checkout without overlapping input files or
+repositories. Existing output is replaced only when it carries a matching
+bundle ownership marker. Preparations use a repository-wide lock; inspect any
+active run before manually removing a stale lock. Older generated bundles
+without a marker are deliberately refused rather than silently overwritten.
+
+Two details that are easy to get wrong:
+
+- The default Alpine `PATH` omits `/usr/local/bin`, so baked bin links are
+  invisible unless the config also bakes `PATH` in `env`.
+- `postBuild.commands` needs a Linux chroot and root, so this config uses
+  `postBuild.copy` instead: symlinks, configuration files, and directory
+  skeletons are prepared on the host rather than created in chroot.
+
+Dependencies are installed for the guest, not the build host. For this Alpine
+aarch64 image the preparation script uses:
+
+```bash
+npm ci --os=linux --cpu=arm64 --libc=musl --ignore-scripts \
+  --include=prod --include=dev --include=optional --no-audit --no-fund
+```
+
+Without `--libc=musl`, npm skips the `*-musl` optional platform packages
+(`@rollup/rollup-linux-arm64-musl`, `@ast-grep/napi-linux-arm64-musl`, ...), and
+the baked tree fails inside the guest. The script checks required platform
+packages and records the target and staged lockfile digests in `provenance.json`.
+Explicit inclusion flags retain validation tools even when the host sets
+`NODE_ENV=production` or npm omit settings. Provenance describes the staged
+inputs actually installed, even if a source checkout changes during preparation.
+Consumers must compare that provenance with their requested dependency state
+before relying on a baked tree for zero-install validation.
+
+Lockfiles pin npm package resolution; they do not make the image assets
+byte-for-byte reproducible. Preparation timestamps and filesystem metadata can
+vary between builds. Verify the exact built image using the asset checksums in
+`manifest.json`.
 
 ## Troubleshooting
 
@@ -430,7 +500,7 @@ Ensure the built architecture matches your host:
 ### Package Not Found
 
 Alpine packages are split across `main` and `community` repositories. Both are
-enabled by default. Search for packages at https://pkgs.alpinelinux.org/packages
+enabled by default. Search for packages at <https://pkgs.alpinelinux.org/packages>
 
 ### Image Too Large
 

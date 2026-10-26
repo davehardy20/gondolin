@@ -1,0 +1,71 @@
+{
+  "imageName": "pi-node-base",
+  "arch": "aarch64",
+  "distro": "alpine",
+  "env": {
+    "PI_GUEST_SANDBOX": "1",
+    "PI_OFFICIAL_REGISTRY_URL": "http://127.0.0.1:8788",
+    "PI_CACHE_DIR": "/pi-scratch/.pi/agent",
+    "PI_CODING_AGENT_DIR": "/pi-scratch/.pi/agent",
+    "PI_HISTORY_FILE": "/pi-scratch/.pi/agent/history",
+    "PI_TELEMETRY": "off",
+    "HOME": "/pi-scratch",
+    "PATH": "/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
+  },
+  "alpine": {
+    "version": "3.23.7",
+    "kernelPackage": "linux-virt",
+    "kernelImage": "vmlinuz-virt",
+    "rootfsPackages": [
+      "linux-virt",
+      "rng-tools",
+      "bash",
+      "ca-certificates",
+      "ca-certificates-bundle",
+      "curl",
+      "e2fsprogs",
+      "e2fsprogs-extra",
+      "nodejs",
+      "npm",
+      "git",
+      "ripgrep",
+      "openssh",
+      "tar",
+      "unzip"
+    ],
+    "initramfsPackages": [],
+    "krunfwVersion": "v5.2.1"
+  },
+  "rootfs": {
+    "label": "gondolin-pi-root",
+    "sizeMb": 8192
+  },
+  "postBuild": {
+    "copy": [
+      {
+        "src": "pi-bundle/node_modules",
+        "dest": "/usr/local/lib/node_modules/"
+      },
+      {
+        "src": "pi-bundle/bin",
+        "dest": "/usr/local/bin/"
+      },
+      {
+        "src": "pi-bundle/etc",
+        "dest": "/etc/"
+      },
+      {
+        "src": "pi-bundle/pi-scratch",
+        "dest": "/pi-scratch/"
+      },
+      {
+        "src": "pi-bundle/deps",
+        "dest": "/pi-deps/"
+      },
+      {
+        "src": "pi-bundle/provenance.json",
+        "dest": "/etc/pi-image-provenance.json"
+      }
+    ]
+  }
+}
