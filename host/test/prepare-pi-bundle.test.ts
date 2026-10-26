@@ -263,6 +263,73 @@ test("prepare-pi-bundle: runtime and repo installs use isolated stages and safe 
   assert.equal(provenance.bakedRepos[0].repoKey, "fixture");
 });
 
+for (const requiresNative of [false, true]) {
+  test(`prepare-pi-bundle: npm succeeds without node_modules (required native=${requiresNative})`, (t) => {
+    const fixture = bundleFixture(t);
+    const native = "@rollup/rollup-linux-arm64-musl";
+    const manifest = {
+      name: "empty-fixture",
+      version: "1.0.0",
+      optionalDependencies: requiresNative ? { [native]: "1.0.0" } : {},
+    };
+    fs.writeFileSync(
+      path.join(fixture.repo, "package.json"),
+      JSON.stringify(manifest),
+    );
+    fs.writeFileSync(
+      path.join(fixture.repo, "package-lock.json"),
+      JSON.stringify({
+        name: manifest.name,
+        version: manifest.version,
+        lockfileVersion: 3,
+        packages: {
+          "": manifest,
+          ...(requiresNative
+            ? {
+                [`node_modules/${native}`]: {
+                  version: "1.0.0",
+                  optional: true,
+                  os: ["linux"],
+                  cpu: ["arm64"],
+                  libc: ["musl"],
+                },
+              }
+            : {}),
+        },
+      }),
+    );
+    const calls = mockNpm(t, (cwd, index) => {
+      if (index === 1) {
+        fs.rmSync(path.join(cwd, "node_modules"), {
+          recursive: true,
+          force: true,
+        });
+      }
+      return undefined;
+    });
+    const prepare = () =>
+      preparePiBundle({
+        repoRoot: fixture.root,
+        config: "images/pi-node-base.json",
+        deps: [`fixture=${fixture.repo}`],
+      });
+    if (requiresNative) {
+      assert.throws(prepare, /missing linux\/arm64\/musl platform packages/);
+    } else {
+      const { outDir, provenance } = prepare();
+      assert.deepEqual(
+        fs.readdirSync(path.join(outDir, "deps", "fixture", "node_modules")),
+        [],
+      );
+      assert.equal(provenance.bakedRepos[0].packageCount, 0);
+      assert.equal(provenance.bakedRepos[0].platformPackages, 0);
+    }
+    assert.equal(calls.length, 2);
+    for (const call of calls) assert.ok(!fs.existsSync(call.cwd));
+    assert.ok(!fs.existsSync(path.join(fixture.repo, "node_modules")));
+  });
+}
+
 for (const out of [
   ".",
   "..",

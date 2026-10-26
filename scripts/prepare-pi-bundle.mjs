@@ -522,6 +522,8 @@ function bakeRepoDeps(outDir, repos, target) {
         stagedLockfile,
         target,
       );
+      // Successful npm ci may omit node_modules when there is nothing to install.
+      fs.mkdirSync(installed, { recursive: true });
       const dest = path.join(outDir, "deps", repo.key);
       fs.rmSync(dest, { recursive: true, force: true });
       fs.mkdirSync(dest, { recursive: true });
