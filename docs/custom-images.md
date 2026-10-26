@@ -418,8 +418,15 @@ To bake a repository's dependencies, omit `--no-deps` and add
 `--deps example=/absolute/path/to/repo` to the preparation command. Repeat
 `--deps` for additional repositories, using keys that are unique ignoring
 ASCII case so output directories are portable across build hosts. Each must
-contain `package.json` and `package-lock.json`; installation happens in temporary staging directories,
-not in those repositories. `--no-deps` overrides any supplied `--deps` values.
+contain `package.json` and `package-lock.json`; installation happens in temporary
+staging directories, not in those repositories. Only standalone npm inputs are
+supported: no workspaces, local directories/tarballs, local dependency overrides,
+or linked packages in the lockfile. Registry dependencies, npm aliases, remote
+tarballs and qualified remote Git dependencies remain supported. Git inputs need
+a URL or a provider prefix such as `github:owner/repo`; unqualified `owner/repo`
+shorthand is rejected along with local paths. Unsupported inputs are rejected
+before replacing an existing bundle. `--no-deps` overrides any supplied
+`--deps` values.
 
 The output must stay inside the checkout without overlapping input files or
 repositories. Existing output is replaced only when it carries a matching
@@ -450,6 +457,8 @@ packages and records the target and staged lockfile digests in `provenance.json`
 Explicit inclusion flags retain validation tools even when the host sets
 `NODE_ENV=production` or npm omit settings. Provenance describes the staged
 inputs actually installed, even if a source checkout changes during preparation.
+All manifests and lockfiles are captured and checked before output replacement;
+those same bytes are then installed, not reread from the source directories.
 Consumers must compare that provenance with their requested dependency state
 before relying on a baked tree for zero-install validation.
 

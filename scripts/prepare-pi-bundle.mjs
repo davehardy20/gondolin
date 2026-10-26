@@ -343,21 +343,115 @@ function writeBinLinks(outDir, nodeModulesDir) {
   return names.sort();
 }
 
-function installRuntimeBundle(repoRoot, target, outDir, guestHome) {
-  const packageDir = path.resolve(repoRoot, BUNDLE_PACKAGE_DIR);
-  const packageJson = path.join(packageDir, "package.json");
-  const lockfile = path.join(packageDir, "package-lock.json");
-  for (const file of [packageJson, lockfile]) {
-    if (!fs.existsSync(file)) {
-      throw new Error(`missing committed bundle manifest: ${file}`);
+function isUnsupportedNpmSpec(spec, resolved = false) {
+  if (typeof spec !== "string" || !spec.trim()) return false;
+  const value = spec.trim();
+  if (/^(?:file|git\+file|link|workspace|portal):/i.test(value)) return true;
+  if (/^[A-Za-z]:/.test(value)) return true;
+  // Require qualified remote specs rather than guessing at slash-containing paths.
+  // npm aliases, github: specs, remote URLs and SSH scp addresses remain valid.
+  if (
+    /^[A-Za-z][A-Za-z0-9+.-]*:/.test(value) ||
+    /^[^\s/@]+@[^\s/:]+:/.test(value)
+  ) {
+    return false;
+  }
+  if (resolved) return value !== "registry.npmjs.org";
+  return (
+    value.startsWith(".") ||
+    value.includes("/") ||
+    value.includes("\\") ||
+    /\.(?:tgz|tar(?:\.gz)?)$/i.test(value)
+  );
+}
+
+function assertStandaloneNpmInputs(snapshot, label) {
+  const manifest = JSON.parse(snapshot.packageJson.toString("utf8"));
+  const lock = JSON.parse(snapshot.lockfile.toString("utf8"));
+  const reject = () => {
+    throw new Error(
+      `${label}: unsupported workspace or path-like dependency; use standalone npm inputs and qualified remote specs`,
+    );
+  };
+  for (const value of [manifest, lock]) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error(`${label}: invalid npm manifest or lockfile`);
     }
   }
+  if (Object.hasOwn(manifest, "workspaces")) reject();
+  const fields = [
+    "dependencies",
+    "devDependencies",
+    "optionalDependencies",
+    "peerDependencies",
+  ];
+  const specs = [
+    ...fields.map((field) => ({ value: manifest[field], override: false })),
+    { value: manifest.overrides, override: true },
+  ];
+  while (specs.length) {
+    const { value, override } = specs.pop();
+    if (typeof value === "string") {
+      if (override && value.startsWith("$")) {
+        // References inherit a declared dependency's independently checked spec.
+        const name = value.slice(1);
+        if (
+          !fields.some((field) => Object.hasOwn(manifest[field] ?? {}, name))
+        ) {
+          reject();
+        }
+      } else if (isUnsupportedNpmSpec(value)) {
+        reject();
+      }
+    } else if (value && typeof value === "object") {
+      specs.push(...Object.values(value).map((value) => ({ value, override })));
+    }
+  }
+  const entries = [
+    ...Object.values(lock.packages ?? {}),
+    ...Object.values(lock.dependencies ?? {}),
+  ];
+  while (entries.length) {
+    const entry = entries.pop();
+    if (!entry || typeof entry !== "object") continue;
+    if (entry.link === true || Object.hasOwn(entry, "workspaces")) reject();
+    if (
+      isUnsupportedNpmSpec(entry.version) ||
+      isUnsupportedNpmSpec(entry.resolved, true)
+    ) {
+      reject();
+    }
+    for (const field of [...fields, "requires"]) {
+      for (const spec of Object.values(entry[field] ?? {})) {
+        if (isUnsupportedNpmSpec(spec)) reject();
+      }
+    }
+    // v1 lockfiles nest dependency descriptors instead of a flat packages map.
+    entries.push(...Object.values(entry.dependencies ?? {}));
+  }
+}
+
+function readNpmSnapshot(dir, label) {
+  const snapshot = {};
+  for (const [field, name] of [
+    ["packageJson", "package.json"],
+    ["lockfile", "package-lock.json"],
+  ]) {
+    const file = path.join(dir, name);
+    if (!fs.existsSync(file)) throw new Error(`${label}: missing ${file}`);
+    snapshot[field] = fs.readFileSync(file);
+  }
+  assertStandaloneNpmInputs(snapshot, label);
+  return snapshot;
+}
+
+function installRuntimeBundle(snapshot, target, outDir, guestHome) {
   const stage = fs.mkdtempSync(path.join(os.tmpdir(), "gondolin-pi-bundle-"));
   try {
     const stagedManifest = path.join(stage, "package.json");
     const stagedLockfile = path.join(stage, "package-lock.json");
-    fs.copyFileSync(packageJson, stagedManifest);
-    fs.copyFileSync(lockfile, stagedLockfile);
+    fs.writeFileSync(stagedManifest, snapshot.packageJson);
+    fs.writeFileSync(stagedLockfile, snapshot.lockfile);
     const manifest = JSON.parse(fs.readFileSync(stagedManifest, "utf8"));
     const packageName = Object.keys(manifest.dependencies ?? {})[0];
     if (!packageName) {
@@ -411,22 +505,16 @@ export function parseDepSpecs(specs) {
 function bakeRepoDeps(outDir, repos, target) {
   const baked = [];
   for (const repo of repos) {
-    const packageJson = path.join(repo.dir, "package.json");
-    const lockfile = path.join(repo.dir, "package-lock.json");
-    for (const file of [packageJson, lockfile]) {
-      if (!fs.existsSync(file)) {
-        throw new Error(
-          `repo ${repo.key} must ship package.json and package-lock.json: missing ${file}`,
-        );
-      }
-    }
     const stage = fs.mkdtempSync(
       path.join(os.tmpdir(), `gondolin-deps-${repo.key}-`),
     );
     try {
       const stagedLockfile = path.join(stage, "package-lock.json");
-      fs.copyFileSync(packageJson, path.join(stage, "package.json"));
-      fs.copyFileSync(lockfile, stagedLockfile);
+      fs.writeFileSync(
+        path.join(stage, "package.json"),
+        repo.snapshot.packageJson,
+      );
+      fs.writeFileSync(stagedLockfile, repo.snapshot.lockfile);
       runNpmCi(stage, target);
       const installed = path.join(stage, "node_modules");
       const platformCount = assertPlatformTrees(
@@ -479,9 +567,18 @@ export function preparePiBundle(options) {
     path.join(repoRoot, ".git"),
     path.join(repoRoot, PREPARE_LOCK),
   ];
+  // Freeze and validate every input before an existing owned bundle is replaced.
+  const runtime = readNpmSnapshot(
+    path.join(repoRoot, BUNDLE_PACKAGE_DIR),
+    "Pi runtime bundle",
+  );
+  const repoSnapshots = repos.map((repo) => ({
+    ...repo,
+    snapshot: readNpmSnapshot(repo.dir, `repo ${repo.key}`),
+  }));
   return withBundleOutput(repoRoot, outDir, inputs, () => {
-    const piBundle = installRuntimeBundle(repoRoot, target, outDir, guestHome);
-    const bakedRepos = bakeRepoDeps(outDir, repos, target);
+    const piBundle = installRuntimeBundle(runtime, target, outDir, guestHome);
+    const bakedRepos = bakeRepoDeps(outDir, repoSnapshots, target);
     const provenance = {
       schemaVersion: 1,
       target,

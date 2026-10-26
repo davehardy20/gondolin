@@ -459,7 +459,7 @@ for (const home of [
 }
 
 for (const stageIndex of [0, 1]) {
-  test(`prepare-pi-bundle: cleans stage ${stageIndex} if manifest copying fails`, (t) => {
+  test(`prepare-pi-bundle: cleans stage ${stageIndex} if manifest staging fails`, (t) => {
     const fixture = bundleFixture(t);
     mockNpm(t);
     const stages: string[] = [];
@@ -472,16 +472,16 @@ for (const stageIndex of [0, 1]) {
       t.after(() => fs.rmSync(stage, { recursive: true, force: true }));
       return stage;
     });
-    const copy = fs.copyFileSync;
+    const write = fs.writeFileSync;
     t.mock.method(
       fs,
-      "copyFileSync",
-      (...args: Parameters<typeof fs.copyFileSync>) => {
+      "writeFileSync",
+      (...args: Parameters<typeof fs.writeFileSync>) => {
         const stage = stages[stageIndex];
-        if (stage && args[1] === path.join(stage, "package-lock.json")) {
+        if (stage && args[0] === path.join(stage, "package-lock.json")) {
           throw new Error("fixture manifest copy failure");
         }
-        return copy(...args);
+        return write(...args);
       },
     );
     assert.throws(
@@ -837,6 +837,186 @@ for (const keys of [
 
 test("prepare-pi-bundle: rejects an empty dependency directory", () => {
   assert.throws(() => parseDepSpecs(["app="]), /<key>=<repo-dir>/);
+});
+
+const unsupportedInputs: Array<{
+  label: string;
+  file: string;
+  patch: Record<string, unknown>;
+}> = [
+  {
+    label: "workspaces",
+    file: "package.json",
+    patch: { workspaces: ["packages/*"] },
+  },
+  {
+    label: "workspace object",
+    file: "package.json",
+    patch: { workspaces: { packages: ["packages/*"] } },
+  },
+  ...[
+    "file:../lib",
+    "file:/abs/lib",
+    "file:./lib.tgz",
+    "git+file:///local/lib.git",
+    "link:../lib",
+    "workspace:*",
+    "portal:../lib",
+    "../lib",
+    ".local-lib",
+    "vendor/local/lib",
+    "owner/repo",
+    "/abs/lib",
+    "lib.tgz",
+    "C:\\lib",
+  ].map((spec) => ({
+    label: spec,
+    file: "package.json",
+    patch: { dependencies: { local: spec } },
+  })),
+  ...["devDependencies", "optionalDependencies", "peerDependencies"].map(
+    (field) => ({
+      label: field,
+      file: "package.json",
+      patch: { [field]: { local: "file:../lib" } },
+    }),
+  ),
+  {
+    label: "nested override",
+    file: "package.json",
+    patch: { overrides: { parent: { child: "file:../lib" } } },
+  },
+  {
+    label: "local scoped override reference",
+    file: "package.json",
+    patch: {
+      dependencies: { "@scope/lib": "file:../lib" },
+      overrides: { "@scope/lib": "$@scope/lib" },
+    },
+  },
+  ...[
+    { link: true, resolved: "packages/lib" },
+    { resolved: "file:../lib" },
+    { resolved: "../lib" },
+    { resolved: "packages/lib" },
+    { version: "file:lib.tgz" },
+  ].map((entry, index) => ({
+    label: `local lock entry ${index}`,
+    file: "package-lock.json",
+    patch: { packages: { "node_modules/lib": entry } },
+  })),
+  {
+    label: "legacy nested local dependency",
+    file: "package-lock.json",
+    patch: {
+      lockfileVersion: 1,
+      packages: undefined,
+      dependencies: {
+        parent: { dependencies: { local: { version: "file:../lib" } } },
+      },
+    },
+  },
+];
+
+for (const source of ["runtime", "repo"] as const) {
+  for (const { label, file, patch } of unsupportedInputs) {
+    test(`prepare-pi-bundle: rejects ${source} ${label} before replacing owned output`, (t) => {
+      const fixture = bundleFixture(t);
+      const calls = mockNpm(t);
+      const options = {
+        repoRoot: fixture.root,
+        config: "images/pi-node-base.json",
+      };
+      const { outDir } = preparePiBundle(options);
+      const provenance = path.join(outDir, "provenance.json");
+      const before = fs.readFileSync(provenance);
+      const input = path.join(fixture[source], file);
+      const original = JSON.parse(fs.readFileSync(input, "utf8"));
+      fs.writeFileSync(input, JSON.stringify({ ...original, ...patch }));
+      assert.throws(
+        () =>
+          preparePiBundle({ ...options, deps: [`fixture=${fixture.repo}`] }),
+        /unsupported.*workspace|unsupported.*local/i,
+      );
+      assert.equal(calls.length, 1);
+      assert.deepEqual(fs.readFileSync(provenance), before);
+      assert.ok(fs.existsSync(path.join(outDir, "node_modules", ".bin", "pi")));
+      assert.ok(
+        !fs.existsSync(path.join(fixture.root, ".gondolin-pi-bundle.lock")),
+      );
+    });
+  }
+}
+
+test("prepare-pi-bundle: keeps remote dependencies, npm aliases and override references", (t) => {
+  const fixture = bundleFixture(t);
+  mockNpm(t);
+  fs.writeFileSync(
+    path.join(fixture.repo, "package.json"),
+    JSON.stringify({
+      dependencies: {
+        alias: "npm:lib@1.2.3",
+        scopedAlias: "npm:@scope/lib@1.2.3",
+        "@scope/lib": "^1.2.3",
+        hostedGit: "github:owner/repo",
+        range: "~1.2.3",
+        remote: "https://example.com/lib.tgz",
+      },
+      overrides: {
+        alias: "$alias",
+        "@scope/lib": "$@scope/lib",
+        parent: { "@scope/lib": "$@scope/lib" },
+      },
+    }),
+  );
+  fs.writeFileSync(
+    path.join(fixture.repo, "package-lock.json"),
+    JSON.stringify({
+      packages: {
+        "node_modules/lib": {
+          version: "1.2.3",
+          resolved: "registry.npmjs.org",
+        },
+        "node_modules/remote": { resolved: "https://example.com/lib.tgz" },
+        "node_modules/git": {
+          resolved: "git+ssh://git@example.com/lib.git#abc",
+        },
+      },
+    }),
+  );
+  const { provenance } = preparePiBundle({
+    repoRoot: fixture.root,
+    config: "images/pi-node-base.json",
+    deps: [`fixture=${fixture.repo}`],
+  });
+  assert.equal(provenance.bakedRepos.length, 1);
+});
+
+test("prepare-pi-bundle: installs the validated repo snapshot when sources change before its stage", (t) => {
+  const fixture = bundleFixture(t);
+  const expected = fs.readFileSync(
+    path.join(fixture.repo, "package.json"),
+    "utf8",
+  );
+  const calls = mockNpm(t, (_cwd, index) => {
+    if (index === 0) {
+      fs.writeFileSync(
+        path.join(fixture.repo, "package.json"),
+        JSON.stringify({
+          workspaces: ["packages/*"],
+          dependencies: { local: "file:../lib" },
+        }),
+      );
+    }
+    return undefined;
+  });
+  preparePiBundle({
+    repoRoot: fixture.root,
+    config: "images/pi-node-base.json",
+    deps: [`fixture=${fixture.repo}`],
+  });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].manifest, expected);
 });
 
 test("prepare-pi-bundle: --deps specs need a key and a repo dir", () => {
