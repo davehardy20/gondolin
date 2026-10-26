@@ -42,6 +42,58 @@ test("pi-node-base: build config parses and validates", () => {
   assert.equal(parsed.distro, "alpine");
 });
 
+function imageReleaseJob(): string {
+  const workflow = fs.readFileSync(
+    new URL("../../.github/workflows/image-release.yml", import.meta.url),
+    "utf8",
+  );
+  const job = workflow
+    .split("\n  build-image:\n")[1]
+    ?.split("\n  publish-image-release:\n")[0];
+  assert.ok(job, "missing build-image job");
+  return job;
+}
+
+test("pi-node-base: image release maps guest architectures to npm CPUs", () => {
+  const entries = [
+    ...imageReleaseJob().matchAll(
+      / {10}- arch: (\w+)\n([\s\S]*?)(?= {10}- arch:| {4}steps:)/g,
+    ),
+  ];
+  assert.deepEqual(
+    entries.map((entry) => [entry[1], entry[2].match(/npm_cpu: (\w+)/)?.[1]]),
+    [
+      ["aarch64", "arm64"],
+      ["x86_64", "x64"],
+    ],
+  );
+});
+
+test("pi-node-base: image release prepares the runtime bundle before building", () => {
+  const job = imageReleaseJob();
+  const install = job.indexOf("      - name: Install dependencies\n");
+  const prepare = job.indexOf("      - name: Prepare Pi bundle\n");
+  const build = job.indexOf("      - name: Build guest image\n");
+  assert.ok(install >= 0 && prepare > install && build > prepare);
+  const step = job.slice(prepare, job.indexOf("\n      -", prepare + 1));
+  for (const token of [
+    "if: needs.prepare.outputs.build_config == 'images/pi-node-base.json'",
+    "BUILD_CONFIG: ${{ needs.prepare.outputs.build_config }}",
+    "TARGET_CPU: ${{ matrix.npm_cpu }}",
+    "node scripts/prepare-pi-bundle.mjs",
+    '--config "$BUILD_CONFIG"',
+    '--cpu "$TARGET_CPU"',
+    "--os linux",
+    "--libc musl",
+    "--no-deps",
+  ]) {
+    assert.ok(
+      step.includes(token),
+      `missing release preparation contract: ${token}`,
+    );
+  }
+});
+
 test("pi-node-base: image name is valid for the image release workflow", () => {
   const config = loadConfig(fs.readFileSync(configPath, "utf8"));
 

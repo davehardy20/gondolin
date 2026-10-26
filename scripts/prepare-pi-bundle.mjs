@@ -157,7 +157,7 @@ function withBundleOutput(repoRoot, outDir, inputs, prepare) {
     }
   };
   checkOutput();
-  // Serialize cooperating preparations before rechecking ownership and deleting.
+  // Serialize cooperating preparations through staging, publication and cleanup.
   const lockDir = path.join(repoRoot, PREPARE_LOCK);
   try {
     fs.mkdirSync(lockDir);
@@ -167,18 +167,75 @@ function withBundleOutput(repoRoot, outDir, inputs, prepare) {
       "bundle preparation lock exists; check for an active run before removing it",
     );
   }
+  let transaction;
+  let result;
+  let published = false;
+  let preserveRecovery = false;
+  const errors = [];
   try {
     checkOutput();
-    fs.rmSync(outDir, { recursive: true, force: true });
-    fs.mkdirSync(path.join(outDir, "deps"), { recursive: true });
-    fs.writeFileSync(path.join(outDir, OWNERSHIP_MARKER), marker, {
+    // Sibling staging keeps both renames on the output's filesystem.
+    fs.mkdirSync(path.dirname(outDir), { recursive: true });
+    transaction = fs.mkdtempSync(
+      path.join(path.dirname(outDir), ".gondolin-pi-bundle-"),
+    );
+    assertSafeOutput(repoRoot, transaction, inputs);
+    const candidate = path.join(transaction, "candidate");
+    const previous = path.join(transaction, "previous");
+    fs.mkdirSync(path.join(candidate, "deps"), { recursive: true });
+    fs.writeFileSync(path.join(candidate, OWNERSHIP_MARKER), marker, {
       flag: "wx",
       mode: 0o600,
     });
-    return prepare();
-  } finally {
-    fs.rmdirSync(lockDir);
+    result = prepare(candidate);
+    checkOutput();
+    const hadOutput = fs.existsSync(outDir);
+    if (hadOutput) fs.renameSync(outDir, previous);
+    try {
+      fs.renameSync(candidate, outDir);
+    } catch (error) {
+      if (hadOutput) {
+        try {
+          fs.renameSync(previous, outDir);
+        } catch (restoreError) {
+          // Neither recovery data nor its lock may be removed after failed rollback.
+          preserveRecovery = true;
+          throw new AggregateError(
+            [error, restoreError],
+            `could not restore previous bundle at ${previous}; recover it before removing ${lockDir}`,
+          );
+        }
+      }
+      throw error;
+    }
+    published = true;
+  } catch (error) {
+    errors.push(error);
   }
+  if (!preserveRecovery) {
+    if (transaction) {
+      try {
+        fs.rmSync(transaction, { recursive: true, force: true });
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    try {
+      fs.rmdirSync(lockDir);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length > 0) {
+    if (published || errors.length > 1) {
+      throw new AggregateError(
+        errors,
+        `${published ? `bundle published at ${outDir}` : "bundle preparation failed"}; cleanup incomplete at ${transaction ?? lockDir}`,
+      );
+    }
+    throw errors[0];
+  }
+  return result;
 }
 
 function sha256File(filePath) {
@@ -578,9 +635,14 @@ export function preparePiBundle(options) {
     ...repo,
     snapshot: readNpmSnapshot(repo.dir, `repo ${repo.key}`),
   }));
-  return withBundleOutput(repoRoot, outDir, inputs, () => {
-    const piBundle = installRuntimeBundle(runtime, target, outDir, guestHome);
-    const bakedRepos = bakeRepoDeps(outDir, repoSnapshots, target);
+  return withBundleOutput(repoRoot, outDir, inputs, (candidate) => {
+    const piBundle = installRuntimeBundle(
+      runtime,
+      target,
+      candidate,
+      guestHome,
+    );
+    const bakedRepos = bakeRepoDeps(candidate, repoSnapshots, target);
     const provenance = {
       schemaVersion: 1,
       target,
@@ -592,7 +654,7 @@ export function preparePiBundle(options) {
       expectedToolchain: EXPECTED_TOOLCHAIN,
     };
     fs.writeFileSync(
-      path.join(outDir, "provenance.json"),
+      path.join(candidate, "provenance.json"),
       `${JSON.stringify(provenance, null, 2)}\n`,
     );
     return { outDir, provenance };

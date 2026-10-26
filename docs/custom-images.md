@@ -430,9 +430,20 @@ before replacing an existing bundle. `--no-deps` overrides any supplied
 
 The output must stay inside the checkout without overlapping input files or
 repositories. Existing output is replaced only when it carries a matching
-bundle ownership marker. Preparations use a repository-wide lock; inspect any
-active run before manually removing a stale lock. Older generated bundles
-without a marker are deliberately refused rather than silently overwritten.
+bundle ownership marker. Replacements are prepared beside the live bundle;
+installation, validation or provenance failures leave the previous bundle intact.
+Publication uses renames with rollback if the replacement cannot be moved into
+place. If rollback itself fails, the error identifies the preserved backup and
+lock: recover the backup before removing that lock. Preparations use a
+repository-wide lock; inspect any active run before manually removing a stale
+lock. Older generated bundles without a marker are deliberately refused rather
+than silently overwritten. After successful publication, a cleanup failure is
+reported separately; the completed new bundle remains available.
+
+The Image Release workflow prepares this runtime-only bundle automatically when
+`build_config` is `images/pi-node-base.json`. Each matrix job installs Linux/musl
+dependencies for its guest CPU (`aarch64` → `arm64`, `x86_64` → `x64`), independent
+of the build host. Other image configurations skip bundle preparation.
 
 Two details that are easy to get wrong:
 

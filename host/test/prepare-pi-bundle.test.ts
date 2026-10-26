@@ -57,12 +57,32 @@ function bundleFixture(t: TestContext) {
   return { root, config, runtime, repo };
 }
 
+function treeSnapshot(dir: string) {
+  return fs
+    .readdirSync(dir, { recursive: true, encoding: "utf8" })
+    .sort()
+    .map((relative) => {
+      const file = path.join(dir, relative);
+      const stat = fs.lstatSync(file);
+      return [
+        relative,
+        stat.mode,
+        stat.isFile()
+          ? fs.readFileSync(file).toString("base64")
+          : stat.isSymbolicLink()
+            ? fs.readlinkSync(file)
+            : null,
+      ];
+    });
+}
+
 function mockNpm(
   t: TestContext,
   onInstall?: (
     cwd: string,
     index: number,
   ) => { status: number; stderr: string } | undefined,
+  npmArgs: string[] = NPM_ARGS,
 ) {
   const calls: Array<{ cwd: string; manifest: string; lockfile: string }> = [];
   const mock = t.mock.method(
@@ -74,7 +94,7 @@ function mockNpm(
       options: { cwd: string; encoding: string },
     ) => {
       assert.equal(command, "npm");
-      assert.deepEqual(args, NPM_ARGS);
+      assert.deepEqual(args, npmArgs);
       const { cwd } = options;
       assert.deepEqual(options, { cwd, encoding: "utf8" });
       assert.equal(path.dirname(cwd), path.resolve(os.tmpdir()));
@@ -225,6 +245,23 @@ for (const noDeps of [false, true]) {
     }
   });
 }
+
+test("prepare-pi-bundle: runtime installation uses the requested x64 guest CPU", (t) => {
+  const fixture = bundleFixture(t);
+  const calls = mockNpm(
+    t,
+    undefined,
+    NPM_ARGS.map((arg) => (arg === "--cpu=arm64" ? "--cpu=x64" : arg)),
+  );
+  const { provenance } = preparePiBundle({
+    repoRoot: fixture.root,
+    config: "images/pi-node-base.json",
+    noDeps: true,
+    cpu: "x64",
+  });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(provenance.target, { ...MUSL_TARGET, cpu: "x64" });
+});
 
 test("prepare-pi-bundle: runtime and repo installs use isolated stages and safe npm flags", (t) => {
   const fixture = bundleFixture(t);
@@ -458,7 +495,18 @@ for (const marker of [undefined, "invalid", "symlink"]) {
 
 test("prepare-pi-bundle: owned output can be rebuilt", (t) => {
   const fixture = bundleFixture(t);
-  const calls = mockNpm(t);
+  let previous: ReturnType<typeof treeSnapshot> | undefined;
+  const calls = mockNpm(t, () => {
+    if (previous) {
+      assert.deepEqual(
+        treeSnapshot(
+          path.join(fs.realpathSync(fixture.root), "images", "pi-bundle"),
+        ),
+        previous,
+      );
+    }
+    return undefined;
+  });
   const options = {
     repoRoot: fixture.root,
     config: "images/pi-node-base.json",
@@ -468,6 +516,7 @@ test("prepare-pi-bundle: owned output can be rebuilt", (t) => {
   const marker = fs.readFileSync(markerPath, "utf8");
   const stale = path.join(outDir, "stale.txt");
   fs.writeFileSync(stale, "stale");
+  previous = treeSnapshot(outDir);
   preparePiBundle(options);
   assert.equal(calls.length, 2);
   assert.ok(!fs.existsSync(stale));
@@ -533,10 +582,16 @@ for (const stageIndex of [0, 1]) {
     const mkdtemp = fs.mkdtempSync;
     t.mock.method(fs, "mkdtempSync", (prefix: string) => {
       const stage = mkdtemp(prefix);
+      t.after(() => fs.rmSync(stage, { recursive: true, force: true }));
+      if (
+        path.dirname(stage) === fs.realpathSync(path.dirname(fixture.config))
+      ) {
+        assert.match(path.basename(stage), /^\.gondolin-pi-bundle-/);
+        return stage;
+      }
       assert.equal(path.dirname(stage), path.resolve(os.tmpdir()));
       assert.ok(path.basename(stage).startsWith("gondolin-"));
       stages.push(stage);
-      t.after(() => fs.rmSync(stage, { recursive: true, force: true }));
       return stage;
     });
     const write = fs.writeFileSync;
@@ -568,22 +623,40 @@ for (const stageIndex of [0, 1]) {
   });
 }
 
-for (const stageIndex of [0, 1]) {
+for (const [stageIndex, refresh] of [
+  [0, false],
+  [1, false],
+  [0, true],
+  [1, true],
+] as const) {
   for (const failure of ["npm", "platform", "copy", "bin"]) {
     if (stageIndex === 1 && failure === "bin") continue;
-    test(`prepare-pi-bundle: cleans stage ${stageIndex} after ${failure} failure`, (t) => {
+    test(`prepare-pi-bundle: cleans stage ${stageIndex} after ${failure} failure (refresh=${refresh})`, (t) => {
       const fixture = bundleFixture(t);
+      const offset = refresh ? 2 : 0;
       const calls = mockNpm(t, (_cwd, index) => {
-        if (index === stageIndex && failure === "npm") {
+        if (index === stageIndex + offset && failure === "npm") {
           return { status: 1, stderr: "fixture npm failure" };
         }
-        if (index === stageIndex && failure === "bin") {
+        if (index === stageIndex + offset && failure === "bin") {
           fs.rmSync(path.join(_cwd, "node_modules", ".bin"), {
             recursive: true,
           });
         }
         return undefined;
       });
+      const options = {
+        repoRoot: fixture.root,
+        config: "images/pi-node-base.json",
+        deps: [`fixture=${fixture.repo}`],
+      };
+      const output = path.join(
+        fs.realpathSync(fixture.root),
+        "images",
+        "pi-bundle",
+      );
+      if (refresh) preparePiBundle(options);
+      const previous = refresh ? treeSnapshot(output) : undefined;
       if (failure === "platform") {
         const source = stageIndex === 0 ? fixture.runtime : fixture.repo;
         fs.writeFileSync(
@@ -603,7 +676,7 @@ for (const stageIndex of [0, 1]) {
       if (failure === "copy") {
         const copy = fs.cpSync;
         t.mock.method(fs, "cpSync", (...args: Parameters<typeof fs.cpSync>) => {
-          const cwd = calls[stageIndex]?.cwd;
+          const cwd = calls[stageIndex + offset]?.cwd;
           if (cwd && args[0] === path.join(cwd, "node_modules")) {
             throw new Error("fixture copy failure");
           }
@@ -611,15 +684,23 @@ for (const stageIndex of [0, 1]) {
         });
       }
       assert.throws(
-        () =>
-          preparePiBundle({
-            repoRoot: fixture.root,
-            config: "images/pi-node-base.json",
-            deps: [`fixture=${fixture.repo}`],
-          }),
+        () => preparePiBundle(options),
         /fixture npm failure|missing linux\/arm64\/musl|fixture copy failure|no node_modules\/\.bin/,
       );
-      assert.equal(calls.length, stageIndex + 1);
+      if (previous) {
+        assert.deepEqual(treeSnapshot(output), previous);
+      } else {
+        assert.ok(
+          !fs.existsSync(output),
+          "failed first preparation left partial output",
+        );
+      }
+      assert.ok(
+        !fs
+          .readdirSync(path.dirname(output))
+          .some((name) => name.startsWith(".gondolin-pi-bundle-")),
+      );
+      assert.equal(calls.length, offset + stageIndex + 1);
       for (const call of calls) {
         assert.ok(!fs.existsSync(call.cwd), `leaked stage: ${call.cwd}`);
       }
@@ -628,6 +709,128 @@ for (const stageIndex of [0, 1]) {
       );
     });
   }
+}
+
+for (const [failure, refresh] of [
+  ["provenance", false],
+  ["provenance", true],
+  ["backup", true],
+  ["publish", false],
+  ["publish", true],
+  ["rollback", true],
+  ["cleanup", true],
+] as const) {
+  test(`prepare-pi-bundle: preserves recoverable bundle state after ${failure} failure (refresh=${refresh})`, (t) => {
+    const fixture = bundleFixture(t);
+    mockNpm(t);
+    const options = {
+      repoRoot: fixture.root,
+      config: "images/pi-node-base.json",
+    };
+    const outDir = path.join(
+      fs.realpathSync(fixture.root),
+      "images",
+      "pi-bundle",
+    );
+    if (refresh) {
+      preparePiBundle(options);
+      fs.writeFileSync(
+        path.join(outDir, "old-sentinel"),
+        "previous working bundle",
+      );
+    }
+    const previous = refresh ? treeSnapshot(outDir) : undefined;
+    const write = fs.writeFileSync;
+    t.mock.method(
+      fs,
+      "writeFileSync",
+      (...args: Parameters<typeof fs.writeFileSync>) => {
+        if (
+          failure === "provenance" &&
+          path.basename(String(args[0])) === "provenance.json"
+        ) {
+          throw new Error("fixture provenance failure");
+        }
+        return write(...args);
+      },
+    );
+    const rename = fs.renameSync;
+    t.mock.method(
+      fs,
+      "renameSync",
+      (...args: Parameters<typeof fs.renameSync>) => {
+        const from = String(args[0]);
+        if (
+          (failure === "backup" && from === outDir) ||
+          (["publish", "rollback"].includes(failure) &&
+            path.basename(from) === "candidate") ||
+          (failure === "rollback" && path.basename(from) === "previous")
+        ) {
+          throw new Error(`fixture ${failure} failure`);
+        }
+        return rename(...args);
+      },
+    );
+    const remove = fs.rmSync;
+    t.mock.method(fs, "rmSync", (...args: Parameters<typeof fs.rmSync>) => {
+      if (
+        failure === "cleanup" &&
+        path.basename(String(args[0])).startsWith(".gondolin-pi-bundle-")
+      ) {
+        throw new Error("fixture cleanup failure");
+      }
+      return remove(...args);
+    });
+    assert.throws(
+      () => preparePiBundle(options),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        if (failure === "rollback" || failure === "cleanup") {
+          assert.ok(error instanceof AggregateError);
+          assert.equal(error.errors.length, failure === "rollback" ? 2 : 1);
+          assert.match(
+            error.message,
+            failure === "rollback"
+              ? /previous bundle.*previous/
+              : /published.*cleanup incomplete/,
+          );
+        } else {
+          assert.match(error.message, /fixture.*failure/);
+        }
+        return true;
+      },
+    );
+    const transactions = fs
+      .readdirSync(path.dirname(outDir))
+      .filter((name) => name.startsWith(".gondolin-pi-bundle-"));
+    if (failure === "rollback" || failure === "cleanup") {
+      assert.equal(transactions.length, 1);
+      const backup = path.join(
+        path.dirname(outDir),
+        transactions[0],
+        "previous",
+      );
+      assert.deepEqual(treeSnapshot(backup), previous);
+      if (failure === "rollback") {
+        assert.ok(!fs.existsSync(outDir));
+        assert.throws(
+          () => preparePiBundle(options),
+          /preparation lock exists/,
+        );
+      } else {
+        assert.ok(fs.existsSync(path.join(outDir, "provenance.json")));
+        assert.ok(!fs.existsSync(path.join(outDir, "old-sentinel")));
+      }
+    } else {
+      if (previous) assert.deepEqual(treeSnapshot(outDir), previous);
+      else assert.ok(!fs.existsSync(outDir));
+      assert.deepEqual(transactions, []);
+    }
+    assert.equal(
+      fs.existsSync(path.join(fixture.root, ".gondolin-pi-bundle.lock")),
+      failure === "rollback",
+    );
+  });
 }
 
 function writeFixture(t: TestContext, lock: Record<string, unknown>): string {
