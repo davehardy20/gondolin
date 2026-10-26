@@ -136,10 +136,12 @@ jobs:
       matrix:
         include:
           - arch: aarch64
+            npm_cpu: arm64
             qemu: qemu-system-arm
             zig_target: aarch64-linux-musl
             archive_arch: aarch64
           - arch: x86_64
+            npm_cpu: x64
             qemu: qemu-system-x86
             zig_target: x86_64-linux-musl
             archive_arch: x86_64
@@ -185,6 +187,15 @@ jobs:
         run: |
           cd guest
           zig build -Doptimize=ReleaseSmall -Dtarget=${{ matrix.zig_target }}
+
+      - name: Prepare Pi bundle
+        if: needs.prepare.outputs.build_config == 'images/pi-node-base.json'
+        env:
+          BUILD_CONFIG: ${{ needs.prepare.outputs.build_config }}
+          TARGET_CPU: ${{ matrix.npm_cpu }}
+        run: |
+          node scripts/prepare-pi-bundle.mjs --config "$BUILD_CONFIG" \
+            --os linux --cpu "$TARGET_CPU" --libc musl --no-deps
 
       - name: Build guest image
         run: |

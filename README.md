@@ -127,7 +127,8 @@ For custom kernels/initrds, provide an explicit `sandbox.imagePath` asset object
   - optional guest -> upstream allowlisted SSH egress (proxied, exec-oriented)
 - **Disk checkpoints (snapshots)** with resume support
 - **Custom image builds** (Alpine-based build pipeline, optional OCI rootfs source)
-- **Configurable DNS behavior** (`synthetic`, `trusted`, `open`), rootfs modes (`readonly`, `memory`, `cow`), and runtime rootfs sizing
+- **Configurable DNS behavior** (`synthetic`, `trusted`, `open`), rootfs modes
+  (`readonly`, `memory`, `cow`), and runtime rootfs sizing
 
 ## Documentation
 
@@ -149,6 +150,17 @@ For custom kernels/initrds, provide an explicit `sandbox.imagePath` asset object
 - [`images/`](images): canonical image release build configs (used by image-release workflow)
 - [Examples](host/examples): end-to-end integration examples
 
+## Typechecking
+
+From the repository root, run:
+
+```bash
+pnpm exec tsc --noEmit
+```
+
+The root `tsconfig.json` inherits the host project's file selection and strict
+compiler options from `host/tsconfig.json`. Node typings resolve from the host
+workspace. The existing host-local typecheck remains supported.
 
 ## Pi Extension
 
