@@ -18,5 +18,8 @@ host/dist/
 host/var/
 host/fuzz/artifacts/
 
+# Generated inputs for images/pi-node-base.json (see docs/custom-images.md)
+images/pi-bundle/
+
 # Zensical docs output
 site/
