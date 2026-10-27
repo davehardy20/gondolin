@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { decode } from "cbor2";
@@ -6,6 +7,34 @@ import type { RpcRequest } from "./virtio-protocol.ts";
 
 export const MAX_RPC_PAYLOAD_BYTES = 64 * 1024;
 const MAX_RPC_FRAME_BYTES = MAX_RPC_PAYLOAD_BYTES + 1024;
+// macOS sun_path is 104 bytes including NUL; Linux allows a little more.
+const MAX_RPC_SOCKET_PATH_BYTES = 103;
+
+function validateRpcSocketPath(socketPath: string): void {
+  if (
+    typeof socketPath !== "string" ||
+    !path.isAbsolute(socketPath) ||
+    path.normalize(socketPath) !== socketPath ||
+    socketPath.includes("\0") ||
+    Buffer.byteLength(socketPath) > MAX_RPC_SOCKET_PATH_BYTES
+  ) {
+    throw new Error(
+      "RPC socket path must be normalized, absolute, NUL-free and at most 103 UTF-8 bytes",
+    );
+  }
+}
+
+/** Private directory path with unchanged UUID entropy and a portable byte limit */
+export function createRpcSocketPath(tmpDir: string): string {
+  const directory = `g-rpc-${randomUUID().replaceAll("-", "")}`;
+  let socketPath = path.join(tmpDir, directory, "s");
+  // Keep TMPDIR when it fits; use the same short parent as macOS otherwise.
+  if (Buffer.byteLength(socketPath) > MAX_RPC_SOCKET_PATH_BYTES) {
+    socketPath = path.join("/tmp", directory, "s");
+  }
+  validateRpcSocketPath(socketPath);
+  return socketPath;
+}
 
 /** Opaque UTF-8 messages on the dedicated guest-to-host virtio-rpc port */
 export type RpcChannelOptions = {
@@ -109,6 +138,7 @@ export class RpcChannel {
 
   constructor(socketPath: string, options: RpcChannelOptions) {
     validateRpcChannelOptions(options);
+    validateRpcSocketPath(socketPath);
     this.socketPath = socketPath;
     this.options = {
       handler: options.handler,

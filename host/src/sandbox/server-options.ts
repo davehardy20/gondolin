@@ -40,6 +40,7 @@ import { isPathWithin } from "../utils/path.ts";
 import { normalizeGuestTmpfs, type GuestTmpfsMounts } from "./tmpfs.ts";
 
 import {
+  createRpcSocketPath,
   type RpcChannelOptions,
   validateRpcChannelOptions,
 } from "./rpc-channel.ts";
@@ -1013,7 +1014,7 @@ export function resolveSandboxServerOptions(
       options.virtioIngressSocketPath ?? defaultVirtioIngress,
     rpcChannel: options.rpcChannel,
     virtioRpcSocketPath: options.rpcChannel
-      ? path.join(tmpDir, `gondolin-rpc-${randomUUID()}`, "channel.sock")
+      ? createRpcSocketPath(tmpDir)
       : undefined,
     netSocketPath: options.netSocketPath ?? defaultNetSock,
     netMac: options.netMac ?? defaultNetMac,

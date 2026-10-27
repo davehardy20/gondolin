@@ -39,7 +39,10 @@ it is never silently disabled. No device or RPC listener is created unless
 sysfs; no new guest daemon or image rebuild is needed.
 
 The host listener uses a unique private directory with mode `0700`, removed
-at shutdown. The channel aborts pending handlers on peer disconnection, VM stop
+at shutdown. On Linux it uses the temporary directory unless the socket path
+would exceed 103 UTF-8 bytes, in which case it uses `/tmp`. macOS always uses
+`/tmp`. Paths are checked before listeners start.
+The channel aborts pending handlers on peer disconnection, VM stop
 or close. A channel that has closed cannot reconnect: start a new VM. Manual
 restart and changed boot configurations that would restart the VM are rejected
 before mutating the active boot configuration. Automatic QEMU idle pausing is
