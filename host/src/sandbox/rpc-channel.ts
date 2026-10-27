@@ -27,7 +27,8 @@ function validateRpcSocketPath(socketPath: string): void {
 /** Private directory path with unchanged UUID entropy and a portable byte limit */
 export function createRpcSocketPath(tmpDir: string): string {
   const directory = `g-rpc-${randomUUID().replaceAll("-", "")}`;
-  let socketPath = path.join(tmpDir, directory, "s");
+  // Relative TMPDIR values must be resolved before enforcing the byte limit.
+  let socketPath = path.resolve(tmpDir, directory, "s");
   // Keep TMPDIR when it fits; use the same short parent as macOS otherwise.
   if (Buffer.byteLength(socketPath) > MAX_RPC_SOCKET_PATH_BYTES) {
     socketPath = path.join("/tmp", directory, "s");
