@@ -272,7 +272,20 @@ export type StdinWindow = {
   };
 };
 
+/** Guest-to-host request on the isolated virtio-rpc port */
+export type RpcRequest = {
+  /** Protocol version */
+  v: 1;
+  /** Message type */
+  t: "rpc_request";
+  /** Strictly increasing request identifier, `1..4294967295` */
+  id: number;
+  /** Application channel and opaque UTF-8 message */
+  p: { channel: string; payload: string };
+};
+
 export type IncomingMessage =
+  | RpcRequest
   | ExecOutput
   | ExecResponse
   | ErrorResponse

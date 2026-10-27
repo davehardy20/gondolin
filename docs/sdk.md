@@ -7,6 +7,7 @@ To keep this easier to navigate, the SDK docs are split into focused guides:
 - [VM Lifecycle & Command Execution](./sdk-vm.md)
 - [Networking, Ingress, and SSH](./sdk-network.md)
 - [Filesystem, Guest Assets, and Snapshots](./sdk-storage.md)
+- [Guest-to-host RPC](./sdk-rpc.md)
 
 ## Quick Start
 
@@ -40,5 +41,3 @@ await vm.close();
 - [SSH](./ssh.md)
 - [VFS Providers](./vfs.md)
 - [Snapshots](./snapshots.md)
-
-

@@ -234,6 +234,8 @@ export type SandboxConfig = {
 
   /** virtio-serial ingress socket path */
   virtioIngressSocketPath: string;
+  /** Optional dedicated host RPC socket path */
+  virtioRpcSocketPath?: string;
   /** kernel cmdline append string */
   append: string;
   /** qemu machine type */
@@ -695,6 +697,16 @@ function buildQemuArgs(config: SandboxConfig) {
     "-device",
     "virtserialport,chardev=virtioingress0,name=virtio-ingress,bus=virtio-serial0.0",
   );
+
+  if (config.virtioRpcSocketPath) {
+    const rpcSocketPath = config.virtioRpcSocketPath.replaceAll(",", ",,");
+    args.push(
+      "-chardev",
+      `socket,id=virtiorpc0,path=${rpcSocketPath},server=off`,
+      "-device",
+      "virtserialport,chardev=virtiorpc0,name=virtio-rpc,bus=virtio-serial0.0",
+    );
+  }
 
   if (config.netSocketPath) {
     args.push(

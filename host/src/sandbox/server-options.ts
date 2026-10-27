@@ -39,6 +39,12 @@ import {
 import { isPathWithin } from "../utils/path.ts";
 import { normalizeGuestTmpfs, type GuestTmpfsMounts } from "./tmpfs.ts";
 
+import {
+  createRpcSocketPath,
+  type RpcChannelOptions,
+  validateRpcChannelOptions,
+} from "./rpc-channel.ts";
+
 const require = createRequire(import.meta.url);
 
 /**
@@ -89,6 +95,8 @@ export type SandboxServerOptions = {
 
   /** virtio-serial ingress socket path */
   virtioIngressSocketPath?: string;
+  /** Optional guest-to-host application RPC, QEMU only */
+  rpcChannel?: RpcChannelOptions;
   /** qemu net socket path */
   netSocketPath?: string;
   /** guest mac address */
@@ -212,6 +220,10 @@ export type ResolvedSandboxServerOptions = {
 
   /** virtio-serial ingress socket path */
   virtioIngressSocketPath: string;
+  /** Dedicated RPC socket path, present only when enabled */
+  virtioRpcSocketPath?: string;
+  /** Validated per-VM application RPC configuration */
+  rpcChannel?: RpcChannelOptions;
   /** qemu net socket path */
   netSocketPath: string;
   /** guest mac address */
@@ -854,6 +866,15 @@ export function resolveSandboxServerOptions(
   }
   const envVmm = normalizeVmm(process.env.GONDOLIN_VMM);
   const vmm = explicitVmm ?? envVmm ?? "qemu";
+  if (options.rpcChannel !== undefined) {
+    validateRpcChannelOptions(options.rpcChannel);
+    if (vmm !== "qemu") {
+      throw new Error("sandbox.rpcChannel is supported only with vmm=qemu");
+    }
+    if (options.autoRestart) {
+      throw new Error("sandbox.rpcChannel does not support autoRestart");
+    }
+  }
   const envCpu = process.env.GONDOLIN_CPU?.trim() || undefined;
   const cpu = vmm === "qemu" ? (options.cpu ?? envCpu) : options.cpu;
   let qemuPath = options.qemuPath ?? defaultQemuForHostArch;
@@ -991,6 +1012,10 @@ export function resolveSandboxServerOptions(
     virtioSshSocketPath: options.virtioSshSocketPath ?? defaultVirtioSsh,
     virtioIngressSocketPath:
       options.virtioIngressSocketPath ?? defaultVirtioIngress,
+    rpcChannel: options.rpcChannel,
+    virtioRpcSocketPath: options.rpcChannel
+      ? createRpcSocketPath(tmpDir)
+      : undefined,
     netSocketPath: options.netSocketPath ?? defaultNetSock,
     netMac: options.netMac ?? defaultNetMac,
     netEnabled: options.netEnabled ?? true,

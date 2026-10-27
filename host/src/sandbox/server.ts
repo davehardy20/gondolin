@@ -52,6 +52,7 @@ import {
 import { errorMessage } from "../utils/error.ts";
 import type { TimeSync } from "./virtio-protocol.ts";
 import { buildTmpfsAppend } from "./tmpfs.ts";
+import { RpcChannel } from "./rpc-channel.ts";
 
 const DEFAULT_MAX_STDIN_BYTES = 64 * 1024;
 const TIME_SYNC_TIMEOUT_MS = 3000;
@@ -213,6 +214,7 @@ export class SandboxServer extends EventEmitter {
     resolve: () => void;
     reject: (error: Error) => void;
   } | null = null;
+  private readonly rpcChannel: RpcChannel | undefined;
   private readonly fsBridge: VirtioBridge;
   private readonly sshBridge: VirtioBridge;
   private readonly ingressBridge: VirtioBridge;
@@ -385,6 +387,21 @@ export class SandboxServer extends EventEmitter {
 
     this.options = resolvedOptions;
     this.internalOptions = internalOptions;
+    if (
+      this.options.rpcChannel &&
+      (this.options.vmm !== "qemu" || !this.options.virtioRpcSocketPath)
+    ) {
+      throw new Error("sandbox.rpcChannel requires a resolved qemu RPC socket");
+    }
+    if (this.options.rpcChannel && this.options.autoRestart) {
+      throw new Error("sandbox.rpcChannel does not support autoRestart");
+    }
+    this.rpcChannel = this.options.rpcChannel
+      ? new RpcChannel(
+          this.options.virtioRpcSocketPath!,
+          this.options.rpcChannel,
+        )
+      : undefined;
 
     this.debugFlags = new Set(this.options.debug ?? []);
     this.vfsProvider = this.options.vfsProvider
@@ -454,11 +471,13 @@ export class SandboxServer extends EventEmitter {
           : undefined,
         netMac: this.options.netMac,
         append: this.baseAppend,
+        virtioRpcSocketPath: this.options.virtioRpcSocketPath,
         machineType: this.options.machineType,
         accel: this.options.accel,
         cpu: this.options.cpu,
         console: this.options.console,
-        qemuIdlePauseMs: this.options.qemuIdlePauseMs,
+        // A pending application handler must not leave its guest paused.
+        qemuIdlePauseMs: this.rpcChannel ? 0 : this.options.qemuIdlePauseMs,
         onResume: () => this.syncGuestClock(),
         autoRestart: this.options.autoRestart,
       };
@@ -556,8 +575,12 @@ export class SandboxServer extends EventEmitter {
         this.fsBridge.connect();
         this.sshBridge.connect();
         this.ingressBridge.connect();
+        this.rpcChannel?.connect();
       }
       if (state === "stopped") {
+        void this.rpcChannel?.close().catch(() => {
+          this.emit("error", new Error("RPC channel cleanup failed"));
+        });
         this.pendingTimeSync?.reject(
           new Error("sandbox stopped during time sync"),
         );

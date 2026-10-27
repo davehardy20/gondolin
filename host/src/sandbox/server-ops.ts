@@ -588,6 +588,9 @@ export class SandboxServerOps {
   }
 
   async startInternal(): Promise<void> {
+    if (this.rpcChannel?.isClosed) {
+      throw new Error("RPC channel is closed; create a new VM");
+    }
     if (this.started) return;
 
     this.started = true;
@@ -596,6 +599,7 @@ export class SandboxServerOps {
     this.fsBridge.connect();
     this.sshBridge.connect();
     this.ingressBridge.connect();
+    this.rpcChannel?.connect();
   }
 
   async closeInternal() {
@@ -610,6 +614,7 @@ export class SandboxServerOps {
       this.fsBridge.disconnect(),
       this.sshBridge.disconnect(),
       this.ingressBridge.disconnect(),
+      this.rpcChannel?.close(),
     ]);
 
     // Tear down host-side network + streams promptly. QEMU may still be running
@@ -904,6 +909,14 @@ export class SandboxServerOps {
       this.handleExecWindow(client, message);
     } else if (message.type === "lifecycle") {
       if (message.action === "restart") {
+        if (this.rpcChannel) {
+          sendError(client, {
+            type: "error",
+            code: "rpc_restart_unsupported",
+            message: "RPC VMs cannot restart; create a new VM",
+          });
+          return;
+        }
         void this.controller.restart();
       } else if (message.action === "shutdown") {
         void this.controller.close();
@@ -933,12 +946,24 @@ export class SandboxServerOps {
 
     const changed =
       !this.bootConfig || !isSameSandboxFsConfig(this.bootConfig, config);
+    const state = this.controller.getState();
+    if (
+      this.rpcChannel &&
+      (this.rpcChannel.isClosed ||
+        (changed && (state === "running" || state === "starting")))
+    ) {
+      sendError(client, {
+        type: "error",
+        code: "rpc_restart_unsupported",
+        message: "RPC VMs cannot restart; create a new VM",
+      });
+      return;
+    }
     this.bootConfig = config;
 
     const append = buildSandboxfsAppend(this.baseAppend, config);
     this.controller.setAppend(append);
 
-    const state = this.controller.getState();
     try {
       if (changed) {
         if (state === "running" || state === "starting") {
