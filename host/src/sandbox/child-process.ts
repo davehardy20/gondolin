@@ -5,6 +5,7 @@ import type { SandboxLogStream } from "./controller.ts";
 
 /** VMM child processes that must be killed when the host process exits */
 const activeChildren = new Set<ChildProcess>();
+const failedSpawns = new WeakSet<ChildProcess>();
 let exitHookRegistered = false;
 
 /** SIGKILL all tracked child processes (best-effort) */
@@ -37,9 +38,17 @@ export function trackChild(child: ChildProcess) {
   activeChildren.add(child);
   const cleanup = () => {
     activeChildren.delete(child);
+    child.off("exit", cleanup);
+    child.off("error", onError);
+  };
+  const onError = () => {
+    // Errors from kill/send do not establish that a spawned process exited.
+    if (child.pid !== undefined) return;
+    failedSpawns.add(child);
+    cleanup();
   };
   child.once("exit", cleanup);
-  child.once("error", cleanup);
+  child.on("error", onError);
 }
 
 /** Re-emit child stdout/stderr chunks as `log` events on `emitter` */
@@ -61,16 +70,11 @@ function bestEffort(fn: () => void) {
 }
 
 /**
- * Best-effort shutdown of a VMM child process.
- *
- * - SIGTERM first
- * - SIGKILL after a short grace period
- * - never hang forever waiting on an "exit" event
- *
- * CI runners (notably Linux/KVM) have occasionally exhibited situations where
- * the VMM does not terminate promptly and keeps Node alive via its stdio
- * pipes. In that case we fall back to destroying the pipes + unref'ing the
- * child so the process can still exit.
+ * Bounded shutdown of the owned VMM process: SIGTERM, then SIGKILL.
+ * Only an observed exit or a failed spawn without a PID confirms termination.
+ * At the deadline, detach this child's pipes so Node can exit, but reject:
+ * detachment and successful signal delivery are not termination evidence.
+ * This confirms the runner, not arbitrary descendants or delegated host work.
  */
 export async function terminateChild(
   child: ChildProcess,
@@ -83,58 +87,64 @@ export async function terminateChild(
 ): Promise<void> {
   const closeTimeoutMs = options.closeTimeoutMs ?? 10_000;
   const sigkillAfterMs = options.sigkillAfterMs ?? 3000;
+  for (const value of [closeTimeoutMs, sigkillAfterMs]) {
+    if (!Number.isSafeInteger(value) || value < 1 || value > 300_000) {
+      throw new Error("Invalid VMM termination limit");
+    }
+  }
+  if (
+    typeof child.exitCode === "number" ||
+    typeof child.signalCode === "string" ||
+    failedSpawns.has(child)
+  ) {
+    return;
+  }
 
   let exited = false;
   let exitHandler: (() => void) | null = null;
   let errorHandler: ((err: Error) => void) | null = null;
 
-  const waitForExit = new Promise<void>((resolve) => {
-    // If the process is already gone, don't wait.
-    // (ChildProcess.exitCode is `number | null`; treat `undefined` as "unknown" and keep waiting.)
-    const exitCode = (child as any).exitCode as number | null | undefined;
-    if (typeof exitCode === "number") {
-      exited = true;
-      resolve();
-      return;
-    }
-
+  const waitForExit = new Promise<"exit">((resolve) => {
     exitHandler = () => {
       exited = true;
-      resolve();
+      resolve("exit");
     };
-
     errorHandler = () => {
-      exited = true;
-      resolve();
+      if (child.pid !== undefined) return;
+      failedSpawns.add(child);
+      exitHandler?.();
     };
-
     child.once("exit", exitHandler);
-    child.once("error", errorHandler);
+    child.on("error", errorHandler);
   });
 
   bestEffort(() => child.kill("SIGTERM"));
 
   const sigkillTimer = setTimeout(() => {
-    bestEffort(() => child.kill("SIGKILL"));
+    if (!exited) bestEffort(() => child.kill("SIGKILL"));
   }, sigkillAfterMs);
 
   // Hard cap on waiting for the child to exit.
   let closeTimeoutTimer: NodeJS.Timeout | null = null;
   try {
-    await Promise.race([
+    const outcome = await Promise.race([
       waitForExit,
-      new Promise<void>((resolve) => {
-        closeTimeoutTimer = setTimeout(resolve, closeTimeoutMs);
+      new Promise<"timeout">((resolve) => {
+        closeTimeoutTimer = setTimeout(
+          () => resolve("timeout"),
+          closeTimeoutMs,
+        );
       }),
     ]);
+    if (outcome === "exit") return;
   } finally {
     if (closeTimeoutTimer) {
       clearTimeout(closeTimeoutTimer);
     }
     clearTimeout(sigkillTimer);
+    if (exitHandler) child.off("exit", exitHandler);
+    if (errorHandler) child.off("error", errorHandler);
   }
-
-  if (exited) return;
 
   // The child is still around: do not keep the event loop alive waiting for it.
   bestEffort(() => child.kill("SIGKILL"));
@@ -145,10 +155,6 @@ export async function terminateChild(
   bestEffort(() => (child.stderr as any)?.destroy?.());
   bestEffort(() => child.unref());
 
-  // Also SIGKILL any other tracked children (best-effort)
-  killActiveChildren();
-
-  // Remove our listeners to avoid leaks if the child exits later.
-  if (exitHandler) child.off("exit", exitHandler);
-  if (errorHandler) child.off("error", errorHandler);
+  // Keep exit-hook tracking until actual exit; never kill another VM here.
+  throw new Error("VMM termination not confirmed before deadline");
 }

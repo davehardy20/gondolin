@@ -651,6 +651,45 @@ test("RPC rejects autoRestart even with pre-resolved options", () => {
   );
 });
 
+for (const action of ["restart", "shutdown"] as const) {
+  for (const observeErrors of [false, true]) {
+    test(`lifecycle ${action} reports shutdown failure with error listener ${observeErrors}`, async () => {
+      const server = new SandboxServer(makeResolvedOptions());
+      const internal = server as any;
+      const { client, captured } = makeClient();
+      const errors: string[] = [];
+      if (observeErrors) {
+        server.on("error", (error) => errors.push(error.message));
+      }
+      internal.bootConfig = { fuseMount: "/data", fuseBinds: [] };
+      internal.clients.add(client);
+      const method = action === "restart" ? "restart" : "close";
+      const original = internal.controller[method];
+      internal.controller[method] = async () => {
+        throw new Error("private backend failure details");
+      };
+      try {
+        internal.handleClientMessage(client, { type: "lifecycle", action });
+        for (let i = 0; i < 10; i++) await Promise.resolve();
+        assert.equal(captured.json.at(-1)?.code, "sandbox_shutdown_failed");
+        assert.equal(
+          captured.json.at(-1)?.message,
+          "sandbox shutdown incomplete",
+        );
+        assert.equal(captured.closed, true);
+        assert.equal(internal.bootConfig, null);
+        assert.deepEqual(
+          errors,
+          observeErrors ? ["sandbox shutdown incomplete"] : [],
+        );
+      } finally {
+        internal.controller[method] = original;
+        await server.close();
+      }
+    });
+  }
+}
+
 for (const change of ["lifecycle", "boot", "stopped"] as const) {
   test(`RPC refuses ${change} restart before changing controller state`, async () => {
     const server = new SandboxServer(

@@ -25,6 +25,34 @@ await vm.start();
 await vm.close();
 ```
 
+`vm.close()` must not be treated as a best-effort signal request. For a spawned
+QEMU or krun runner, successful shutdown requires an observed process exit. A
+failed spawn without a PID also counts as no runner remaining. Errors from a
+running process (for example, a failed kill) do not confirm termination.
+
+Runner shutdown sends SIGTERM, escalates to SIGKILL after 3 seconds, and rejects
+with `VMM termination not confirmed before deadline` if termination is still
+unconfirmed at 10 seconds. It detaches that runner's pipes so they cannot keep
+Node alive, but retains exit-hook tracking; it does not kill other VMs. This
+bounds the runner wait, not every other host cleanup operation.
+
+A failed runner shutdown stays failed across repeated close calls, including
+after a late exit. The controller cannot start another runner after that
+failure. The VM's disposable root disk is not deleted by this failed close;
+external staging and other guest-used resources must likewise be retained or
+quarantined. Host network/RPC shutdown may already have started, so failure does
+not mean the VM is still usable. Do not suppress the rejection and report clean
+shutdown. Successful runner termination does not prove arbitrary descendant
+termination, settlement of separately delegated host work, or successful guest
+execution; those require their own ownership and drain checks.
+
+After a startup timeout, another `vm.start()` waits for the pending cleanup.
+Successful cleanup still permits retry; failed cleanup permanently closes VM
+startup admission, even if the controller still reports `running`. Lifecycle
+`restart`/`shutdown` message failures report `sandbox_shutdown_failed`, invalidate
+the boot configuration, and close the requesting connection rather than leave an
+unhandled shutdown rejection.
+
 ## Session Identity and External Attaching
 
 Each `VM` instance has a stable session UUID available as `vm.id`.
@@ -55,8 +83,11 @@ including:
 
 - before the VM has started, such as with `VM.create({ autoStart: false })`
 - after the VM has been closed or the runner process has exited
-- while `vm.close()` is in progress, after Gondolin has released its runner handle
 - if a backend fails before spawning its runner, or a future backend does not expose a PID
+
+For QEMU and krun, the PID remains available during shutdown until actual exit.
+A late exit can clear the PID even after shutdown failed. PID availability is
+for diagnostics, not a shutdown receipt: await `vm.close()` and handle rejection.
 
 ## `vm.exec()`
 
@@ -64,15 +95,18 @@ This is the most common operation. It returns an `ExecProcess` (a running
 command handle) which is both:
 
 - **Promise-like**: `await vm.exec(...)` yields an `ExecResult`
-- **Stream-like**: when stdout/stderr are configured as `"pipe"`, it is an `AsyncIterable` for stdout and exposes `stdout`/`stderr` streams
+- **Stream-like**: when stdout/stderr are configured as `"pipe"`, it is an
+  `AsyncIterable` for stdout and exposes `stdout`/`stderr` streams
 
 There are two forms:
 
 - `vm.exec("...")` (string): runs the command via a login shell, equivalent to:
   `vm.exec(["/bin/sh", "-lc", "..."])`
-- `vm.exec([cmd, ...argv])` (array): executes an executable directly. **It does not search `$PATH`**, so `cmd` must be an **absolute path**.
+- `vm.exec([cmd, ...argv])` (array): executes an executable directly.
+  **It does not search `$PATH`**, so `cmd` must be an **absolute path**.
 
-If you want shell features (pipelines, `$VARS`, globbing, `$(...)`, etc.), use the string form (or call `/bin/sh` explicitly):
+If you want shell features (pipelines, `$VARS`, globbing, `$(...)`, etc.), use the
+string form (or call `/bin/sh` explicitly):
 
 ```ts
 const result = await vm.exec("echo $HOME | wc -c");
@@ -176,14 +210,16 @@ What `attach()` does:
 
 - wires `stdin` -> guest process (requires `stdin: true`)
 - forwards `stdout`/`stderr` to the provided writable streams when they are set to `"pipe"`
-- if `stdout`/`stderr` are `"inherit"` (or a custom writable), output is already forwarded by the VM, and `attach()` only handles input/resize
+- if `stdout`/`stderr` are `"inherit"` (or a custom writable), output is already
+  forwarded by the VM, and `attach()` only handles input/resize
 - enables raw mode on TTY stdin, and forwards terminal resize events to the guest (only meaningful with `pty: true`)
 - automatically cleans up listeners and restores raw mode when the process exits
 
 Notes:
 
 - `attach()` can only be called once per process.
-- Don't simultaneously consume `proc.stdout` / async-iterate the process and call `attach()`; attaching will consume the pipe.
+- Don't simultaneously consume `proc.stdout` / async-iterate the process and call
+  `attach()`; attaching will consume the pipe.
 
 ### Avoiding Large Buffers
 
@@ -288,5 +324,6 @@ Notes:
 - `vm.fs.readFile()` reads any path visible in the **running guest filesystem** (including rootfs paths under `/`)
 - `vm.fs.readFile()` returns a `Buffer` by default; pass `encoding` to get a `string`
 - `vm.fs.readFileStream()` streams file bytes as a Node readable stream
-- `vm.fs.writeFile()` truncates existing files before writing and accepts `string`, `Buffer`, `Uint8Array`, `Readable`, or `AsyncIterable`
+- `vm.fs.writeFile()` truncates existing files before writing and accepts
+  `string`, `Buffer`, `Uint8Array`, `Readable`, or `AsyncIterable`
 - `vm.fs.deleteFile()` supports `force` and `recursive`
