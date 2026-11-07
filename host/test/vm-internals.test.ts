@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import childProcess, { execFileSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { mock } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { MemoryProvider, type VirtualProvider } from "../src/vfs/node/index.ts";
@@ -953,6 +954,123 @@ test("vm internals: ensureRunning throws when stopped and autoStart disabled", a
     cleanup();
   }
 });
+
+for (const cleanupSucceeds of [false, true]) {
+  test(`vm internals: pending timeout cleanup ${cleanupSucceeds} gates startup retry`, async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    const { vm, cleanup } = makeVm({
+      autoStart: false,
+      startTimeoutMs: 10,
+      vfs: null,
+      rootfs: { mode: "readonly" },
+    });
+    const teardown = Promise.withResolvers<void>();
+    const originalClose = (vm as any).closeInternal.bind(vm);
+    const close = mock.fn(() => teardown.promise);
+    (vm as any).server.start = async () => {};
+    (vm as any).ensureVmmAvailable = () => {};
+    (vm as any).ensureConnection = async () => {};
+    (vm as any).ensureRunning = () => new Promise<void>(() => {});
+    (vm as any).ensureRootfsResized = async () => {};
+    (vm as any).ensureVfsReady = async () => {};
+    (vm as any).ensureSessionIpc = async () => {};
+    (vm as any).closeInternal = close;
+    try {
+      const first = assert.rejects(vm.start(), /startup timed out/);
+      mock.timers.tick(10);
+      await first;
+      // Timeout cleanup is deliberately deferred to the next timer turn.
+      mock.timers.tick(0);
+      assert.equal(close.mock.callCount(), 1);
+      (vm as any).ensureRunning = async () => {};
+      let settled = false;
+      const retry = vm.start().then(
+        () => {
+          settled = true;
+          return true;
+        },
+        () => {
+          settled = true;
+          return false;
+        },
+      );
+      for (let i = 0; i < 50; i++) await Promise.resolve();
+      const settledBeforeCleanup = settled;
+      if (cleanupSucceeds) teardown.resolve();
+      else {
+        teardown.reject(
+          new Error("VMM termination not confirmed before deadline"),
+        );
+      }
+      assert.equal(await retry, cleanupSucceeds);
+      assert.equal(settledBeforeCleanup, false);
+      if (!cleanupSucceeds) {
+        await assert.rejects(vm.start(), /closed/);
+      }
+    } finally {
+      teardown.resolve();
+      (vm as any).closeInternal = originalClose;
+      await vm.close();
+      mock.restoreAll();
+      mock.timers.reset();
+      cleanup();
+    }
+  });
+}
+
+for (const confirmed of [false, true]) {
+  test(`vm internals: confirmed shutdown ${confirmed} gates disposable root disk cleanup`, async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    const child = Object.assign(new EventEmitter(), {
+      pid: 12345,
+      exitCode: null as number | null,
+      signalCode: null,
+      stdout: null,
+      stderr: null,
+      kill: mock.fn(() => true),
+      unref: mock.fn(),
+    });
+    mock.method(childProcess, "spawn", () => child as any);
+    const { vm, cleanup } = makeVm({
+      autoStart: false,
+      vfs: null,
+      rootfs: { mode: "readonly" },
+    });
+    // The fixture's root disk is a disposable test file, not an image asset.
+    const disk = (vm as any).rootDisk;
+    disk.deleteOnClose = true;
+    try {
+      await (vm as any).server.controller.start();
+      // Do not emit spawn: the server would open real virtio socket listeners.
+      const closing = vm.close();
+      const outcome = confirmed
+        ? closing
+        : assert.rejects(closing, /termination not confirmed/);
+      for (let i = 0; i < 50; i++) await Promise.resolve();
+      assert.equal(child.kill.mock.callCount(), 1);
+      if (confirmed) {
+        child.exitCode = 0;
+        child.emit("exit", 0, null);
+      } else {
+        mock.timers.tick(10_000);
+      }
+      await outcome;
+      assert.equal(fs.existsSync(disk.path), !confirmed);
+      if (!confirmed) {
+        await assert.rejects(vm.close(), /termination not confirmed/);
+        child.exitCode = 0;
+        child.emit("exit", 0, null);
+        await assert.rejects(vm.close(), /termination not confirmed/);
+        assert.equal(fs.existsSync(disk.path), true);
+      }
+    } finally {
+      child.emit("exit", 0, null);
+      mock.restoreAll();
+      mock.timers.reset();
+      cleanup();
+    }
+  });
+}
 
 test("vm internals: handleDisconnect rejects pending state waiters and sessions", async () => {
   const { vm, cleanup } = makeVm({ vfs: null });

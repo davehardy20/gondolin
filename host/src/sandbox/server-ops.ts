@@ -908,6 +908,18 @@ export class SandboxServerOps {
     } else if (message.type === "exec_window") {
       this.handleExecWindow(client, message);
     } else if (message.type === "lifecycle") {
+      const shutdownFailed = () => {
+        this.bootConfig = null;
+        const error = new Error("sandbox shutdown incomplete");
+        sendError(client, {
+          type: "error",
+          code: "sandbox_shutdown_failed",
+          message: error.message,
+        });
+        this.closeClient(client);
+        // Client reporting must not require an EventEmitter error subscriber.
+        if (this.listenerCount("error") > 0) this.emit("error", error);
+      };
       if (message.action === "restart") {
         if (this.rpcChannel) {
           sendError(client, {
@@ -917,9 +929,9 @@ export class SandboxServerOps {
           });
           return;
         }
-        void this.controller.restart();
+        void this.controller.restart().catch(shutdownFailed);
       } else if (message.action === "shutdown") {
-        void this.controller.close();
+        void this.controller.close().catch(shutdownFailed);
       }
     } else {
       sendError(client, {

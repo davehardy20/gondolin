@@ -123,6 +123,8 @@ export class KrunController extends EventEmitter {
   private state: SandboxState = "stopped";
   private restartTimer: NodeJS.Timeout | null = null;
   private manualStop = false;
+  private closePromise: Promise<void> | null = null;
+  private shutdownIncomplete = false;
   private readonly config: KrunConfig;
   private activeConfigPath: string | null = null;
 
@@ -144,7 +146,9 @@ export class KrunController extends EventEmitter {
   }
 
   async start() {
+    if (this.shutdownIncomplete) throw new Error("VMM shutdown incomplete");
     if (this.child) return;
+    this.closePromise = null;
 
     this.manualStop = false;
     this.setState("starting");
@@ -170,7 +174,16 @@ export class KrunController extends EventEmitter {
         this.setState("running");
       });
 
-      this.child.on("error", (err) => {
+      const child = this.child;
+      child.on("error", (err) => {
+        if (child.pid !== undefined) {
+          this.emit(
+            "log",
+            "VMM process error; termination not confirmed\n",
+            "stderr",
+          );
+          return;
+        }
         this.cleanupActiveConfig();
         this.child = null;
         this.setState("stopped");
@@ -198,24 +211,27 @@ export class KrunController extends EventEmitter {
     }
   }
 
-  async close() {
-    if (!this.child) {
-      this.cleanupActiveConfig();
-      return;
-    }
-    const child = this.child;
-    this.child = null;
-    this.manualStop = true;
+  close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
+    const completion = Promise.withResolvers<void>();
+    this.closePromise = completion.promise;
+    this.shutdownIncomplete = true;
+    void this.closeInternal().then(completion.resolve, completion.reject);
+    return this.closePromise;
+  }
 
+  private async closeInternal() {
+    this.manualStop = true;
     if (this.restartTimer) {
       clearTimeout(this.restartTimer);
       this.restartTimer = null;
     }
-
-    await terminateChild(child);
+    const child = this.child;
+    if (child) await terminateChild(child);
 
     this.cleanupActiveConfig();
     this.setState("stopped");
+    this.shutdownIncomplete = false;
   }
 
   async restart() {

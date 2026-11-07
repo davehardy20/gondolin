@@ -270,6 +270,8 @@ export class SandboxController extends EventEmitter {
   private restartTimer: NodeJS.Timeout | null = null;
   private idleTimer: NodeJS.Timeout | null = null;
   private manualStop = false;
+  private closePromise: Promise<void> | null = null;
+  private shutdownIncomplete = false;
   private paused = false;
   private pauseInProgress = false;
   private syncPending = false;
@@ -314,7 +316,9 @@ export class SandboxController extends EventEmitter {
   }
 
   async start() {
+    if (this.shutdownIncomplete) throw new Error("VMM shutdown incomplete");
     if (this.child) return;
+    this.closePromise = null;
 
     this.cancelIdlePause();
     this.qmpGeneration += 1;
@@ -343,7 +347,16 @@ export class SandboxController extends EventEmitter {
       this.setState("running");
     });
 
-    this.child.on("error", (err) => {
+    const child = this.child;
+    child.on("error", (err) => {
+      if (child.pid !== undefined) {
+        this.emit(
+          "log",
+          "VMM process error; termination not confirmed\n",
+          "stderr",
+        );
+        return;
+      }
       this.cancelIdlePause();
       this.qmpGeneration += 1;
       this.cleanupQmpSocket();
@@ -373,29 +386,35 @@ export class SandboxController extends EventEmitter {
     });
   }
 
-  async close() {
+  close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
+    // Install before signals/state callbacks can synchronously reenter close.
+    const completion = Promise.withResolvers<void>();
+    this.closePromise = completion.promise;
+    this.shutdownIncomplete = true;
+    void this.closeInternal().then(completion.resolve, completion.reject);
+    return this.closePromise;
+  }
+
+  private async closeInternal() {
     this.cancelIdlePause();
     this.qmpGeneration += 1;
-    if (!this.child) {
-      this.cleanupQmpSocket();
-      return;
-    }
-    const child = this.child;
-    this.child = null;
     this.manualStop = true;
-
     if (this.restartTimer) {
       clearTimeout(this.restartTimer);
       this.restartTimer = null;
     }
-
-    await terminateChild(child);
+    // Retain the handle until the exit observer clears it. A timed-out close
+    // stays failed, including after a late exit, and cannot restart the runner.
+    const child = this.child;
+    if (child) await terminateChild(child);
 
     this.cleanupQmpSocket();
     this.paused = false;
     this.pauseInProgress = false;
     this.qmpChain = Promise.resolve();
     this.setState("stopped");
+    this.shutdownIncomplete = false;
   }
 
   resumeForActivity(): Promise<void> | void {

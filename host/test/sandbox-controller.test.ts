@@ -22,7 +22,7 @@ import {
 const cp: any = (child_process as any).default ?? (child_process as any);
 
 class FakeChildProcess extends EventEmitter {
-  pid = 12345;
+  pid: number | undefined = 12345;
   stdout = new PassThrough();
   stderr = new PassThrough();
   killedSignals: Array<string | undefined> = [];
@@ -353,6 +353,7 @@ test("SandboxController: error event emits exit with error and does not auto-res
   const exits: any[] = [];
   controller.on("exit", (e) => exits.push(e));
 
+  child.pid = undefined; // Failed spawn, not an error from a running process.
   await controller.start();
   child.emit("error", new Error("boom"));
 

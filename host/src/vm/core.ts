@@ -248,6 +248,8 @@ export class VM {
   private readonly startSingleflight = new AsyncSingleflight<void>();
   private readonly closeSingleflight = new AsyncSingleflight<void>();
   private startupGeneration = 0;
+  /** Pending startup-timeout cleanup completion, not termination evidence */
+  private startupCleanup: Promise<void> | null = null;
   private statusPromise: Promise<SandboxState> | null = null;
   private statusResolve: ((state: SandboxState) => void) | null = null;
   private statusReject: ((error: Error) => void) | null = null;
@@ -1196,6 +1198,7 @@ fi
   }
 
   private async startInternal() {
+    if (this.startupCleanup) await this.startupCleanup;
     if (this.closed) {
       throw new Error("vm is closed and cannot be restarted");
     }
@@ -1247,11 +1250,20 @@ fi
           if (this.startupGeneration !== cleanupGeneration) {
             return;
           }
-          // Tear down without marking the vm closed so start() can be retried.
+          // Publish the wait before cleanup can reenter startup. Only successful
+          // cleanup permits retry; a still-running controller is not readiness.
+          const completion = Promise.withResolvers<void>();
+          this.startupCleanup = completion.promise;
+          const finished = () => {
+            this.startupCleanup = null;
+            completion.resolve();
+          };
           void this.closeSingleflight
             .run(() => this.closeInternal())
-            .catch(() => {
-              // ignore close errors after startup timeout
+            .then(finished, () => {
+              this.closed = true;
+              this.invalidateStartupGeneration();
+              finished();
             });
         }, 0);
       },
